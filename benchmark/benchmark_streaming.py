@@ -217,9 +217,23 @@ def benchmark_buffer_size_tradeoff(
         retrain_count = sum(1 for l in logs if l["retrained"])
         fit_times = [l["fit_time"] for l in logs]
         score_times = [l["score_time"] for l in logs]
+        retrain_fit_times = [l["fit_time"] for l in logs if l.get("retrained", False)]
+
         peak_structural_mem = max(l["memory_bytes"] for l in logs)
         final_cum_acc = logs[-1]["cumulative_accuracy"]
         throughput = float(total_samples / max(total_time, 1e-9))
+
+        mean_fit_chunk = float(np.mean(fit_times) * 1000.0) if fit_times else 0.0
+        median_fit_chunk = float(np.median(fit_times) * 1000.0) if fit_times else 0.0
+        mean_score_chunk = float(np.mean(score_times) * 1000.0) if score_times else 0.0
+        median_score_chunk = float(np.median(score_times) * 1000.0) if score_times else 0.0
+
+        if retrain_fit_times:
+            mean_fit_retrain: Optional[float] = float(np.mean(retrain_fit_times) * 1000.0)
+            median_fit_retrain: Optional[float] = float(np.median(retrain_fit_times) * 1000.0)
+        else:
+            mean_fit_retrain = None
+            median_fit_retrain = None
 
         results.append({
             "buffer_size": bs,
@@ -228,10 +242,12 @@ def benchmark_buffer_size_tradeoff(
             "retrain_count": retrain_count,
             "total_time_sec": float(total_time),
             "throughput_samples_per_sec": throughput,
-            "mean_fit_time_per_chunk_ms": float(np.mean(fit_times) * 1000.0),
-            "median_fit_time_per_chunk_ms": float(np.median(fit_times) * 1000.0),
-            "mean_score_time_per_chunk_ms": float(np.mean(score_times) * 1000.0),
-            "median_score_time_per_chunk_ms": float(np.median(score_times) * 1000.0),
+            "mean_fit_time_per_chunk_ms": mean_fit_chunk,
+            "median_fit_time_per_chunk_ms": median_fit_chunk,
+            "mean_fit_time_per_retrain_ms": mean_fit_retrain,
+            "median_fit_time_per_retrain_ms": median_fit_retrain,
+            "mean_score_time_per_chunk_ms": mean_score_chunk,
+            "median_score_time_per_chunk_ms": median_score_chunk,
             "estimated_structural_memory_bytes": int(peak_structural_mem),
             "final_cumulative_accuracy": float(final_cum_acc) if final_cum_acc is not None else 0.0,
         })
@@ -361,13 +377,19 @@ def run_and_save_benchmarks(output_dir: str = "benchmark/results") -> None:
         "",
         f"Evaluated on a synthetic stream of {buffer_res[0]['total_samples']} samples (chunk size {buffer_res[0]['chunk_size']}) with fixed decision boundaries.",
         "",
-        "| Buffer Size | Retrains | Total Time (s) | Streaming Pipeline Throughput (samples/s) | Fit Latency/chunk (ms) | Estimated Structural Memory (bytes) | Prequential Acc |",
-        "|---|---|---|---|---|---|---|",
+        "| Buffer Size | Retrains | Total Time (s) | Streaming Pipeline Throughput (samples/s) | Mean Fit Latency / Chunk (ms) | Mean Fit Latency / Retrain Event (ms) | Mean Scoring Latency / Chunk (ms) | Estimated Structural Memory (bytes) | Prequential Acc |",
+        "|---|---|---|---|---|---|---|---|---|",
     ])
     for r in buffer_res:
+        retrain_fit_str = (
+            f"{r['mean_fit_time_per_retrain_ms']:.2f}"
+            if r["mean_fit_time_per_retrain_ms"] is not None
+            else "N/A"
+        )
         md_content.append(
             f"| {r['buffer_size']} | {r['retrain_count']} | {r['total_time_sec']:.3f} | "
-            f"{r['throughput_samples_per_sec']:.1f} | {r['median_fit_time_per_chunk_ms']:.2f} | "
+            f"{r['throughput_samples_per_sec']:.1f} | {r['mean_fit_time_per_chunk_ms']:.2f} | "
+            f"{retrain_fit_str} | {r['mean_score_time_per_chunk_ms']:.3f} | "
             f"{r['estimated_structural_memory_bytes']:,} | {r['final_cumulative_accuracy']:.4f} |"
         )
 

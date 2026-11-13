@@ -98,23 +98,23 @@ We evaluated split search latency across synthetic multi-class datasets ($C=3$) 
 ### 4.2 Streaming Buffer Size Trade-offs
 We evaluated the full streaming pipeline (`CSVReader` $\to$ `Imputer` $\to$ `StandardScaler` $\to$ `DecisionTreeClassifier` $\to$ `StreamTrainer`) across a synthetic stream of 5,000 samples (chunk size 100) with fixed decision boundaries:
 
-| Buffer Size | Retrains | Total Time (s) | Streaming Pipeline Throughput (samples/s) | Fit Latency/chunk (ms) | Estimated Structural Memory (bytes) | Prequential Acc |
-|---|---|---|---|---|---|---|
-| **50** | 50 | 0.108 | 46,428 | 2.10 | 5,136 | 0.7833 |
-| **100** | 50 | 0.107 | 46,766 | 2.03 | 5,136 | 0.7833 |
-| **250** | 16 | 0.079 | 63,519 | 0.04 | 15,248 | 0.8234 |
-| **500** | 10 | 0.070 | 70,976 | 0.04 | 23,760 | 0.8360 |
-| **1,000** | 5 | 0.060 | 83,442 | 0.03 | 44,464 | 0.8405 |
-| **2,500** | 2 | 0.052 | 95,488 | 0.03 | 104,592 | 0.8508 |
+| Buffer Size | Retrains | Total Time (s) | Streaming Pipeline Throughput (samples/s) | Mean Fit Latency / Chunk (ms) | Mean Fit Latency / Retrain Event (ms) | Mean Scoring Latency / Chunk (ms) | Estimated Structural Memory (bytes) | Prequential Acc |
+|---|---|---|---|---|---|---|---|---|
+| **50** | 50 | 0.106 | 47,183 | 2.05 | 2.05 | 0.057 | 5,136 | 0.7833 |
+| **100** | 50 | 0.105 | 47,637 | 2.03 | 2.03 | 0.056 | 5,136 | 0.7833 |
+| **250** | 16 | 0.077 | 64,744 | 1.47 | 4.52 | 0.058 | 15,248 | 0.8234 |
+| **500** | 10 | 0.068 | 73,053 | 1.30 | 6.35 | 0.055 | 23,760 | 0.8360 |
+| **1,000** | 5 | 0.058 | 85,715 | 1.10 | 10.66 | 0.052 | 44,464 | 0.8405 |
+| **2,500** | 2 | 0.052 | 96,084 | 0.99 | 24.07 | 0.033 | 104,592 | 0.8508 |
 
 ```
 Pipeline Throughput vs. Structural Memory Trade-off:
-Streaming Throughput (samples/sec) : [50: 46.4k] ------> [2500: 95.5k]  (2.1x increase)
+Streaming Throughput (samples/sec) : [50: 47.2k] ------> [2500: 96.1k]  (2.0x increase)
 Estimated Structural Memory        : [50: 5.1 KB] ------> [2500: 104.6 KB] (strictly bounded)
 Prequential Accuracy               : [50: 78.3%]  ------> [2500: 85.1%]   (+6.8% stability)
 ```
 
-**Key Finding**: On this fixed-boundary stream, larger buffer sizes decrease the total number of retraining cycles, increasing streaming pipeline processing throughput from 46,428 to 95,488 samples/sec. Estimated structural memory (tracking retained candidate models and raw pending buffers, distinct from process RSS) scales modestly from 5.1 KB to 104.6 KB. Prequential accuracy increases from 78.3% to 85.1% due to larger training support.
+**Key Finding**: On this fixed-boundary stream, larger buffer sizes decrease the total number of retraining cycles, increasing streaming pipeline processing throughput from 47,183 to 96,084 samples/sec. Although mean fit latency per retraining event increases with buffer size (from 2.05 ms at $B=50$ to 24.07 ms at $B=2500$ due to larger training support), retraining events become so infrequent that amortized mean fit latency per chunk drops from 2.05 ms to 0.99 ms. Estimated structural memory scales predictably from 5.1 KB to 104.6 KB, and prequential accuracy reaches 85.1%.
 
 ---
 
