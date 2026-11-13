@@ -1,33 +1,37 @@
 # NumCompute Streaming Performance & Empirical Evaluation
 
-**Environment:** Python 3.15.0, NumPy 2.5.4
-**Date:** 2026-11-13 17:02:44
+**Environment:** Python 3.15.0, NumPy 2.5.4 (darwin)
+**Date:** 2026-11-13 17:28:16
 
 ## 1. Vectorised vs. Naive Python Loop Split Evaluation
 
-| Sample Size (N) | Naive Loop (ms) | Vectorised NumPy (ms) | Speedup Factor | Max Gain Δ |
-|---|---|---|---|---|
-| 100 | 0.476 | 0.075 | **6.3x** | 0.00e+00 |
-| 500 | 2.072 | 0.217 | **9.5x** | 5.55e-17 |
-| 1000 | 4.221 | 0.422 | **10.0x** | 2.78e-17 |
-| 2000 | 8.294 | 0.829 | **10.0x** | 4.08e-17 |
-| 5000 | 21.215 | 2.133 | **9.9x** | 4.16e-17 |
+Evaluated on synthetic multi-class datasets ($C=3$) with 2 warm-up iterations and 10 measured repetitions.
+Timings report both median and mean execution times.
+
+| Sample Size (N) | Naive Loop Median (ms) | Vectorised Median (ms) | Speedup (Median) | Gain Δ | Threshold Δ | Partition Match |
+|---|---|---|---|---|---|---|
+| 100 | 0.433 | 0.064 | **6.8x** | 0.00e+00 | 0.00e+00 | Yes (Exact) |
+| 500 | 2.108 | 0.223 | **9.5x** | 5.55e-17 | 0.00e+00 | Yes (Exact) |
+| 1000 | 4.221 | 0.395 | **10.7x** | 2.78e-17 | 0.00e+00 | Yes (Exact) |
+| 2000 | 8.595 | 0.812 | **10.6x** | 4.08e-17 | 0.00e+00 | Yes (Exact) |
+| 5000 | 21.665 | 2.149 | **10.1x** | 4.16e-17 | 0.00e+00 | Yes (Exact) |
 
 ## 2. Streaming Buffer Size Trade-offs
 
-Evaluated on a stream of 5000 samples, chunk size 100.
+Evaluated on a synthetic stream of 5000 samples (chunk size 100) with fixed decision boundaries.
 
-| Buffer Size | Retrains | Total Time (s) | Throughput (samples/s) | Fit Latency/chunk (ms) | Peak Memory (bytes) | Prequential Acc |
+| Buffer Size | Retrains | Total Time (s) | Streaming Pipeline Throughput (samples/s) | Fit Latency/chunk (ms) | Estimated Structural Memory (bytes) | Prequential Acc |
 |---|---|---|---|---|---|---|
-| 50 | 50 | 0.108 | 46430.2 | 2.08 | 5,136 | 0.7833 |
-| 100 | 50 | 0.105 | 47602.9 | 2.03 | 5,136 | 0.7833 |
-| 250 | 16 | 0.078 | 63937.1 | 1.49 | 15,248 | 0.8234 |
-| 500 | 10 | 0.069 | 72700.5 | 1.30 | 23,760 | 0.8360 |
-| 1000 | 5 | 0.059 | 84953.7 | 1.11 | 44,464 | 0.8405 |
-| 2500 | 2 | 0.052 | 96847.7 | 0.99 | 104,592 | 0.8508 |
+| 50 | 50 | 0.106 | 47073.8 | 2.05 | 5,136 | 0.7833 |
+| 100 | 50 | 0.107 | 46704.0 | 2.08 | 5,136 | 0.7833 |
+| 250 | 16 | 0.078 | 64378.1 | 0.04 | 15,248 | 0.8234 |
+| 500 | 10 | 0.068 | 73167.3 | 0.04 | 23,760 | 0.8360 |
+| 1000 | 5 | 0.059 | 84113.0 | 0.03 | 44,464 | 0.8405 |
+| 2500 | 2 | 0.053 | 94086.5 | 0.03 | 104,592 | 0.8508 |
 
 ## 3. Analysis & Key Insights
 
-- **Vectorisation:** The vectorised candidate split evaluation provides orders of magnitude speedup over naive looping while guaranteeing exact bit-identical split selection.
-- **Buffer Size Latency vs Memory:** Smaller buffer sizes trigger frequent retraining, increasing overall compute time but reacting faster to concept drift. Larger buffers achieve high throughput with fewer retrains while consuming modest bounded memory for the pending buffer.
-- **Prequential Integrity:** Test-then-train evaluation faithfully monitors model predictive generalization across the incoming stream.
+- **Vectorisation & Partition Equivalence:** Vectorised candidate split evaluation provides a ~6x to ~10x measured speedup over naive iterative split loops across sample sizes $N \in [100, 5000]$. Both implementations produce identical sample partitions (`partition_match = True`) with gain differences bounded within machine epsilon.
+- **Buffer Size vs Pipeline Throughput:** On this synthetic dataset with fixed decision boundaries, larger buffer sizes decrease the frequency of retraining cycles, resulting in higher overall streaming pipeline processing throughput (from ~45k samples/sec at buffer 50 up to ~95k samples/sec at buffer 2500).
+- **Structural Memory Footprint:** The memory metric measures the estimated structural memory footprint of retained model objects and pending buffers (not full OS process resident set size). The structural footprint scales proportionally with buffer capacity (from ~5 KB to ~105 KB).
+- **Prequential Integrity:** The prequential test-then-train protocol strictly evaluates incoming chunks before retraining, ensuring uncorrupted evaluation.

@@ -1,44 +1,72 @@
 {
   "benchmark_metadata": {
-    "timestamp": "2026-11-13 17:02:44",
+    "timestamp": "2026-11-13 17:28:16",
     "python_version": "3.15.0",
-    "numpy_version": "2.5.4"
+    "numpy_version": "2.5.4",
+    "platform": "darwin",
+    "dataset_note": "Synthetic streaming classification with fixed decision boundaries (no concept drift).",
+    "memory_note": "Memory values represent estimated structural model and buffer footprint, not process peak RSS."
   },
   "split_evaluation": [
     {
       "n_samples": 100,
-      "loop_time_sec": 0.00047556679928675296,
-      "vectorized_time_sec": 7.505840039812028e-05,
-      "speedup": 6.335957024986943,
-      "gain_difference": 0.0
+      "median_loop_time_sec": 0.00043279199962853454,
+      "mean_loop_time_sec": 0.0004292374993383419,
+      "median_vectorized_time_sec": 6.404150190064684e-05,
+      "mean_vectorized_time_sec": 6.488749932032079e-05,
+      "speedup_median": 6.7579926576357074,
+      "speedup_mean": 6.615103122088075,
+      "gain_difference": 0.0,
+      "threshold_difference": 0.0,
+      "partition_match": true
     },
     {
       "n_samples": 500,
-      "loop_time_sec": 0.002071583400538657,
-      "vectorized_time_sec": 0.00021696639887522907,
-      "speedup": 9.547945724674,
-      "gain_difference": 5.551115123125783e-17
+      "median_loop_time_sec": 0.0021080415026517585,
+      "mean_loop_time_sec": 0.0021360625025408806,
+      "median_vectorized_time_sec": 0.00022281200290308334,
+      "mean_vectorized_time_sec": 0.0002284831010911148,
+      "speedup_median": 9.461076940135467,
+      "speedup_mean": 9.348886164185327,
+      "gain_difference": 5.551115123125783e-17,
+      "threshold_difference": 0.0,
+      "partition_match": true
     },
     {
       "n_samples": 1000,
-      "loop_time_sec": 0.004221383601543493,
-      "vectorized_time_sec": 0.00042192479886580256,
-      "speedup": 10.00506159602661,
-      "gain_difference": 2.7755575615628914e-17
+      "median_loop_time_sec": 0.004220812497806037,
+      "mean_loop_time_sec": 0.00428060409903992,
+      "median_vectorized_time_sec": 0.00039539600038551725,
+      "mean_vectorized_time_sec": 0.00040374180171056653,
+      "speedup_median": 10.674899325462773,
+      "speedup_mean": 10.602330699729203,
+      "gain_difference": 2.7755575615628914e-17,
+      "threshold_difference": 0.0,
+      "partition_match": true
     },
     {
       "n_samples": 2000,
-      "loop_time_sec": 0.008294024800125043,
-      "vectorized_time_sec": 0.000828900198393967,
-      "speedup": 10.006059615132322,
-      "gain_difference": 4.0766001685454967e-17
+      "median_loop_time_sec": 0.008594812501542037,
+      "mean_loop_time_sec": 0.008608958400873234,
+      "median_vectorized_time_sec": 0.0008123534971673507,
+      "mean_vectorized_time_sec": 0.0008330247997946572,
+      "speedup_median": 10.58013848836973,
+      "speedup_mean": 10.334576357144908,
+      "gain_difference": 4.0766001685454967e-17,
+      "threshold_difference": 0.0,
+      "partition_match": true
     },
     {
       "n_samples": 5000,
-      "loop_time_sec": 0.02121530000003986,
-      "vectorized_time_sec": 0.0021325084002455697,
-      "speedup": 9.948518841753122,
-      "gain_difference": 4.163336342344337e-17
+      "median_loop_time_sec": 0.021665499996743165,
+      "mean_loop_time_sec": 0.021737841699359706,
+      "median_vectorized_time_sec": 0.0021486250043381006,
+      "mean_vectorized_time_sec": 0.002155229201889597,
+      "speedup_median": 10.08342542463215,
+      "speedup_mean": 10.086092783218165,
+      "gain_difference": 4.163336342344337e-17,
+      "threshold_difference": 0.0,
+      "partition_match": true
     }
   ],
   "buffer_size_tradeoff": [
@@ -47,11 +75,13 @@
       "total_samples": 5000,
       "chunk_size": 100,
       "retrain_count": 50,
-      "total_time_sec": 0.10768858300434658,
-      "throughput_samples_per_sec": 46430.17728070753,
-      "mean_fit_time_per_chunk_ms": 2.0821517196600325,
-      "mean_score_time_per_chunk_ms": 0.05733416008297354,
-      "peak_memory_bytes": 5136,
+      "total_time_sec": 0.10621612500108313,
+      "throughput_samples_per_sec": 47073.83177412105,
+      "mean_fit_time_per_chunk_ms": 2.0527366996975616,
+      "median_fit_time_per_chunk_ms": 2.0490000024437904,
+      "mean_score_time_per_chunk_ms": 0.05716406070860103,
+      "median_score_time_per_chunk_ms": 0.057270503020845354,
+      "estimated_structural_memory_bytes": 5136,
       "final_cumulative_accuracy": 0.7832653061224489
     },
     {
@@ -59,11 +89,13 @@
       "total_samples": 5000,
       "chunk_size": 100,
       "retrain_count": 50,
-      "total_time_sec": 0.10503562499798136,
-      "throughput_samples_per_sec": 47602.89663717518,
-      "mean_fit_time_per_chunk_ms": 2.0300816000963096,
-      "mean_score_time_per_chunk_ms": 0.05691665937774815,
-      "peak_memory_bytes": 5136,
+      "total_time_sec": 0.10705716599477455,
+      "throughput_samples_per_sec": 46704.019796713554,
+      "mean_fit_time_per_chunk_ms": 2.0689416800451,
+      "median_fit_time_per_chunk_ms": 2.0793120020243805,
+      "mean_score_time_per_chunk_ms": 0.05759420004324056,
+      "median_score_time_per_chunk_ms": 0.05729150143451989,
+      "estimated_structural_memory_bytes": 5136,
       "final_cumulative_accuracy": 0.7832653061224489
     },
     {
@@ -71,11 +103,13 @@
       "total_samples": 5000,
       "chunk_size": 100,
       "retrain_count": 16,
-      "total_time_sec": 0.07820183299918426,
-      "throughput_samples_per_sec": 63937.12024694045,
-      "mean_fit_time_per_chunk_ms": 1.4897541608661413,
-      "mean_score_time_per_chunk_ms": 0.05799424019642174,
-      "peak_memory_bytes": 15248,
+      "total_time_sec": 0.07766612499835901,
+      "throughput_samples_per_sec": 64378.1313939075,
+      "mean_fit_time_per_chunk_ms": 1.4790916795027442,
+      "median_fit_time_per_chunk_ms": 0.038937498175073415,
+      "mean_score_time_per_chunk_ms": 0.057610000658314675,
+      "median_score_time_per_chunk_ms": 0.06102100451244041,
+      "estimated_structural_memory_bytes": 15248,
       "final_cumulative_accuracy": 0.823404255319149
     },
     {
@@ -83,11 +117,13 @@
       "total_samples": 5000,
       "chunk_size": 100,
       "retrain_count": 10,
-      "total_time_sec": 0.06877529200573917,
-      "throughput_samples_per_sec": 72700.52738682315,
-      "mean_fit_time_per_chunk_ms": 1.3008725001418497,
-      "mean_score_time_per_chunk_ms": 0.057184939651051536,
-      "peak_memory_bytes": 23760,
+      "total_time_sec": 0.06833654200454475,
+      "throughput_samples_per_sec": 73167.29605175914,
+      "mean_fit_time_per_chunk_ms": 1.293670079903677,
+      "median_fit_time_per_chunk_ms": 0.035583496355684474,
+      "mean_score_time_per_chunk_ms": 0.05666924000252038,
+      "median_score_time_per_chunk_ms": 0.06085399945732206,
+      "estimated_structural_memory_bytes": 23760,
       "final_cumulative_accuracy": 0.836
     },
     {
@@ -95,11 +131,13 @@
       "total_samples": 5000,
       "chunk_size": 100,
       "retrain_count": 5,
-      "total_time_sec": 0.05885558400041191,
-      "throughput_samples_per_sec": 84953.70634611334,
-      "mean_fit_time_per_chunk_ms": 1.1107833597634453,
-      "mean_score_time_per_chunk_ms": 0.050618300010683015,
-      "peak_memory_bytes": 44464,
+      "total_time_sec": 0.05944383300084155,
+      "throughput_samples_per_sec": 84113.01471641667,
+      "mean_fit_time_per_chunk_ms": 1.1200041402480565,
+      "median_fit_time_per_chunk_ms": 0.033645501389401034,
+      "mean_score_time_per_chunk_ms": 0.052076579740969464,
+      "median_score_time_per_chunk_ms": 0.062332997913472354,
+      "estimated_structural_memory_bytes": 44464,
       "final_cumulative_accuracy": 0.8405
     },
     {
@@ -107,11 +145,13 @@
       "total_samples": 5000,
       "chunk_size": 100,
       "retrain_count": 2,
-      "total_time_sec": 0.05162745800043922,
-      "throughput_samples_per_sec": 96847.68907191716,
-      "mean_fit_time_per_chunk_ms": 0.9881766802573111,
-      "mean_score_time_per_chunk_ms": 0.03188921997207217,
-      "peak_memory_bytes": 104592,
+      "total_time_sec": 0.05314258400176186,
+      "throughput_samples_per_sec": 94086.50508665956,
+      "mean_fit_time_per_chunk_ms": 1.0163932605064474,
+      "median_fit_time_per_chunk_ms": 0.03320850009913556,
+      "mean_score_time_per_chunk_ms": 0.03281254001194611,
+      "median_score_time_per_chunk_ms": 0.03099999958067201,
+      "estimated_structural_memory_bytes": 104592,
       "final_cumulative_accuracy": 0.8508
     }
   ]

@@ -83,38 +83,38 @@ Streaming systems cannot tolerate corrupted internal state if a retrain fails du
 All experiments were executed on an Apple M-series platform running Python 3.15.0 and NumPy 2.5.4 using the automated benchmark suite `benchmark/benchmark_streaming.py`.
 
 ### 4.1 Split Search: Vectorised vs. Naive Python Loop
-We evaluated split search latency across synthetic multi-class datasets ($C=3$):
+We evaluated split search latency across synthetic multi-class datasets ($C=3$) with 2 warm-up iterations and 10 measured repetitions. Timings report median values:
 
-| Sample Size ($N$) | Naive Loop Latency (ms) | Vectorised NumPy (ms) | Speedup Factor | Numerical Gain $\Delta$ |
-|---|---|---|---|---|
-| 100 | 0.476 | 0.075 | **6.3x** | $0.00 \times 10^0$ |
-| 500 | 2.072 | 0.217 | **9.5x** | $5.55 \times 10^{-17}$ |
-| 1,000 | 4.221 | 0.422 | **10.0x** | $2.78 \times 10^{-17}$ |
-| 2,000 | 8.294 | 0.829 | **10.0x** | $4.08 \times 10^{-17}$ |
-| 5,000 | 21.215 | 2.133 | **9.9x** | $4.16 \times 10^{-17}$ |
+| Sample Size ($N$) | Naive Loop Median (ms) | Vectorised Median (ms) | Speedup (Median) | Gain $\Delta$ | Threshold $\Delta$ | Partition Match |
+|---|---|---|---|---|---|---|
+| 100 | 0.433 | 0.064 | **6.8x** | $0.00 \times 10^0$ | $0.00 \times 10^0$ | Yes (Exact) |
+| 500 | 2.108 | 0.223 | **9.5x** | $5.55 \times 10^{-17}$ | $0.00 \times 10^0$ | Yes (Exact) |
+| 1,000 | 4.221 | 0.395 | **10.7x** | $2.78 \times 10^{-17}$ | $0.00 \times 10^0$ | Yes (Exact) |
+| 2,000 | 8.595 | 0.812 | **10.6x** | $4.08 \times 10^{-17}$ | $0.00 \times 10^0$ | Yes (Exact) |
+| 5,000 | 21.665 | 2.149 | **10.1x** | $4.16 \times 10^{-17}$ | $0.00 \times 10^0$ | Yes (Exact) |
 
-**Key Finding**: Vectorisation delivers an exact **10.0x empirical speedup** for typical buffer sizes ($N \ge 1,000$) while maintaining bit-identical split selection ($\Delta \le 4.16 \times 10^{-17}$, well below float64 machine precision).
+**Key Finding**: Vectorisation delivers a **6.8x to 10.7x measured speedup** over iterative Python loops while producing mathematically identical left/right sample partitions (`partition_match = True`) and impurity gains differing by at most $5.55 \times 10^{-17}$ (bounded within floating-point machine precision).
 
 ### 4.2 Streaming Buffer Size Trade-offs
-We evaluated the full streaming pipeline (`CSVReader` $\to$ `Imputer` $\to$ `StandardScaler` $\to$ `DecisionTreeClassifier` $\to$ `StreamTrainer`) across a stream of 5,000 samples in chunks of 100:
+We evaluated the full streaming pipeline (`CSVReader` $\to$ `Imputer` $\to$ `StandardScaler` $\to$ `DecisionTreeClassifier` $\to$ `StreamTrainer`) across a synthetic stream of 5,000 samples (chunk size 100) with fixed decision boundaries:
 
-| Buffer Size | Retrains | Total Time (s) | Throughput (samples/s) | Fit Latency/chunk (ms) | Peak Memory (bytes) | Prequential Acc |
+| Buffer Size | Retrains | Total Time (s) | Streaming Pipeline Throughput (samples/s) | Fit Latency/chunk (ms) | Estimated Structural Memory (bytes) | Prequential Acc |
 |---|---|---|---|---|---|---|
-| **50** | 50 | 0.108 | 46,430 | 2.08 | 5,136 | 0.7833 |
-| **100** | 50 | 0.105 | 47,603 | 2.03 | 5,136 | 0.7833 |
-| **250** | 16 | 0.078 | 63,937 | 1.49 | 15,248 | 0.8234 |
-| **500** | 10 | 0.069 | 72,701 | 1.30 | 23,760 | 0.8360 |
-| **1,000** | 5 | 0.059 | 84,954 | 1.11 | 44,464 | 0.8405 |
-| **2,500** | 2 | 0.052 | 96,848 | 0.99 | 104,592 | 0.8508 |
+| **50** | 50 | 0.106 | 47,074 | 2.05 | 5,136 | 0.7833 |
+| **100** | 50 | 0.107 | 46,704 | 2.08 | 5,136 | 0.7833 |
+| **250** | 16 | 0.078 | 64,378 | 0.04 | 15,248 | 0.8234 |
+| **500** | 10 | 0.068 | 73,167 | 0.04 | 23,760 | 0.8360 |
+| **1,000** | 5 | 0.059 | 84,113 | 0.03 | 44,464 | 0.8405 |
+| **2,500** | 2 | 0.053 | 94,087 | 0.03 | 104,592 | 0.8508 |
 
 ```
-Throughput vs. Memory Trade-off:
-Throughput (samples/sec)  : [50: 46.4k] ------> [2500: 96.8k]  (2.1x increase)
-Peak Structural Memory    : [50: 5.1 KB] ------> [2500: 104.6 KB] (strictly bounded)
-Prequential Accuracy      : [50: 78.3%]  ------> [2500: 85.1%]   (+6.8% stability)
+Pipeline Throughput vs. Structural Memory Trade-off:
+Streaming Throughput (samples/sec) : [50: 47.1k] ------> [2500: 94.1k]  (2.0x increase)
+Estimated Structural Memory        : [50: 5.1 KB] ------> [2500: 104.6 KB] (strictly bounded)
+Prequential Accuracy               : [50: 78.3%]  ------> [2500: 85.1%]   (+6.8% stability)
 ```
 
-**Key Finding**: As buffer size scales from 50 to 2,500 samples, throughput increases from 46,430 to 96,848 samples/sec, and prequential accuracy improves by 6.8% due to larger statistical support during split selection. Peak structural memory remains strictly proportional to buffer size, consuming under 105 KB.
+**Key Finding**: On this fixed-boundary stream, larger buffer sizes decrease the total number of retraining cycles, increasing streaming pipeline processing throughput from 47,074 to 94,087 samples/sec. Estimated structural memory (tracking retained candidate models and raw pending buffers, distinct from process RSS) scales modestly from 5.1 KB to 104.6 KB. Prequential accuracy increases from 78.3% to 85.1% due to larger training support.
 
 ---
 
@@ -141,3 +141,4 @@ The complete test suite comprises **400 automated unit and integration tests** p
 ## 7. Conclusion
 
 The `numcompute_stream` framework demonstrates that high-performance, mathematically rigorous streaming machine learning can be achieved using **only plain Python and NumPy**. Through vectorised split search, the Transformer Snapshot Pattern, and sample-weighted prequential evaluation, the architecture achieves up to 96,800+ samples/second throughput while maintaining strict memory bounds and failure atomicity.
+
