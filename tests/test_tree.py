@@ -383,3 +383,4 @@ def test_tree_flush_method():
     assert tree.n_buffered_samples_ == 0
     assert tree.n_retrains_ == 1
     np.testing.assert_array_equal(tree.predict([[1.5], [8.5]]), [0, 1])
+
