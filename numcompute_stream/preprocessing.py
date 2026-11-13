@@ -97,3 +97,4 @@ class OneHotEncoder:
     def fit_transform(self, X, y=None) -> np.ndarray:
         """Fit and transform batch X."""
         return self.fit(X, y).transform(X)
+

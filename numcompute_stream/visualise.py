@@ -50,3 +50,4 @@ def plot_predictions_vs_ground_truth(
 ) -> Tuple[plt.Figure, plt.Axes]:
     """Plot sample-by-sample predictions compared against ground truth."""
     raise NotImplementedError("Will be implemented in Phase 5")
+

@@ -60,3 +60,4 @@ class Pipeline:
     def score(self, X, y) -> float:
         """Score predictions against true labels y."""
         raise NotImplementedError("Will be implemented in Phase 4")
+

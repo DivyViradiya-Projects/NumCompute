@@ -55,3 +55,4 @@ __all__ = [
     "NotFittedError",
     "__version__",
 ]
+

@@ -77,3 +77,4 @@ class RollingMetrics:
         self._y_true_window.clear()
         self._y_pred_window.clear()
         return self
+

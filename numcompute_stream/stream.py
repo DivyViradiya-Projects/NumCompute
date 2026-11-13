@@ -38,3 +38,4 @@ class StreamTrainer:
     def get_logs(self) -> List[Dict[str, Any]]:
         """Return history of chunk logs."""
         return list(self.logs_)
+

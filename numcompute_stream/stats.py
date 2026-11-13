@@ -67,3 +67,4 @@ def update_stats(existing_stats: Optional[StreamingStats], X_chunk) -> Streaming
     else:
         stats = existing_stats
     return stats.update(X_chunk)
+
