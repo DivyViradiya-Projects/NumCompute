@@ -1,34 +1,34 @@
 # NumCompute
 
-> **A modular scientific computing toolkit in Plain Python and NumPy only.**  
-> Built for *Programming for AI (Assignment 2.1)* at the Adelaide University.
+> **A modular scientific computing & streaming decision tree toolkit in Plain Python and NumPy only.**  
+> Built for *Programming for AI (Assignments 2.1 & 2.2)* at the University of Adelaide.
 
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![NumPy](https://img.shields.io/badge/numpy-pure%20numpy-orange.svg)](https://numpy.org/)
-[![Tests](https://img.shields.io/badge/tests-281%20passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-400%20passed-brightgreen.svg)]()
 [![Code Style](https://img.shields.io/badge/code%20style-pep8-blue.svg)]()
 
 ---
 
 ## 1. Project Overview & Philosophy
 
-**NumCompute** simulates core scientific computing library primitives similar to scikit learn, scipy.stats, and scipy.optimize constructed entirely from first principles using **only plain Python and NumPy** (no pandas, scikit-learn, PyTorch, or SciPy).
+**NumCompute** implements core scientific computing and streaming machine learning primitives from first principles using **only plain Python and NumPy** (strictly no pandas, scikit-learn, PyTorch, or SciPy).
+
+The repository contains two cohesive packages:
+1. **`numcompute` (Assignment 2.1)**: Core array algorithms, descriptive statistics (Welford), sorting/ranking, numerical optimization (line search, finite-difference Jacobians), and scikit-learn compatible batch preprocessing/pipelines.
+2. **`numcompute_stream` (Assignment 2.2)**: A high-throughput streaming decision tree framework featuring vectorised split evaluations, transactional buffered retraining, the Transformer Snapshot Pattern, strict prequential evaluation (test-then-train), online metrics, and chunked CSV streaming.
 
 ### Core Technical Pillars
 
-1. **Vectorisation First**: Core computations avoid explicit Python loops, utilising NumPy broadcasting, universal functions (`ufuncs`), contiguous slicing, and vectorized indexing for speed-ups ranging from **5x to over 900x**.
-2. **Numerical Stability**:
+1. **Vectorisation First**: Core computations avoid explicit Python loops, utilising NumPy broadcasting, universal functions (`ufuncs`), contiguous slicing, and vectorized indexing for speed-ups ranging from **6x to over 900x**.
+2. **Transformer Snapshot Pattern**: Solves feature coordinate drift in streaming pipelines by freezing intermediate transformer projections at model retraining time, ensuring 100% consistent feature coordinates during inference.
+3. **Prequential Integrity**: Strict test-then-train protocol via `StreamTrainer` that evaluates every incoming chunk against the existing model before updating weights, preventing data leakage.
+4. **Numerical Stability**:
    - Max-shifted $\log\sum\exp$ and Softmax formulations preventing overflow and underflow.
-   - Robust tie handling for rankings and partial sorts.
-   - Comprehensive `nan_policy` semantics (`'propagate'`, `'omit'`, `'raise'`).
-   - Welford's single-pass algorithm and Chan's parallel merge for numerically stable streaming variance.
-3. **Consistent Scikit-Learn-Compatible API**:
-   - `Transformer` and `Estimator` base protocols with `fit`, `transform`, `fit_transform`, and `predict`.
-   - Learned attributes follow the trailing underscore convention (e.g., `mean_`, `scale_`).
-   - Standardised exceptions (`NotFittedError`, informative `ValueError` and `TypeError` messages).
-   - Predictable axis semantics across 1D and 2D arrays with negative axis support.
-4. **Comprehensive Documentation**: Full NumPyDoc standard docstrings with parameter descriptions, returned array shapes, exceptions raised, and both time and space complexities ($O(\cdot)$).
-5. **Rigorous Quality Assurance**: 281 unit tests validating edge cases (empty inputs, constant arrays, boundary ties, NaNs, non-contiguous memory strides), verified against mutation testing.
+   - Welford's single-pass algorithm and Chan's parallel merge for online mean/variance updates in strict $O(d)$ space.
+   - Overflow-safe midpoint calculations: $a + 0.5 \cdot (b - a)$.
+5. **Transactional Failure Atomicity**: Retraining operations use candidate swapping; any runtime error during candidate training leaves prior models, classes, and pending buffers completely intact.
+6. **Rigorous Quality Assurance**: **400 automated tests** passing under `pytest -W error` with zero warnings, covering all edge cases, numerical boundaries, and 6 end-to-end integration scenarios.
 
 ---
 
@@ -36,7 +36,7 @@
 
 ```text
 NumCompute/
-├── numcompute/                     # Core library package
+├── numcompute/                     # Core scientific computing library (Assignment 2.1)
 │   ├── __init__.py                 # Top-level exports and versioning
 │   ├── io.py                       # CSV/TSV reader, chunked streaming, missing value handling
 │   ├── preprocessing.py            # StandardScaler, MinMaxScaler, Imputer, OneHotEncoder
@@ -48,76 +48,127 @@ NumCompute/
 │   ├── pipeline.py                 # Transformer/Estimator API, Pipeline, Compose, FeatureUnion
 │   ├── utils.py                    # Numerical activations, stable softmax/logsumexp, pairwise distances
 │   └── benchmarking.py             # Micro-benchmarking harness and environment inspection
-├── tests/                          # Comprehensive pytest suite (281 tests)
-│   ├── test_io.py
-│   ├── test_preprocessing.py
-│   ├── test_sort_search.py
-│   ├── test_rank.py
-│   ├── test_stats.py
-│   ├── test_metrics.py
-│   ├── test_optim.py
-│   ├── test_pipeline.py
-│   ├── test_utils.py
-│   └── test_benchmarking.py
-├── demo/                           # End-to-end interactive demonstration
-│   ├── quickstart.ipynb            # Self-contained executed Jupyter notebook
-│   ├── sample_data.csv             # Synthetic 200-row dataset with missing values
-│   └── sample_data.tsv             # Tab-separated dataset demonstrating custom delimiters
+├── numcompute_stream/              # Streaming Decision Tree Framework (Assignment 2.2)
+│   ├── __init__.py                 # Public streaming API exports
+│   ├── tree.py                     # DecisionTreeClassifier with vectorised split search & buffered retraining
+│   ├── preprocessing.py            # Online StandardScaler (Chan), Imputer, OneHotEncoder
+│   ├── stats.py                    # StreamingStats (online moments, histograms, quantiles)
+│   ├── metrics.py                  # StreamingMetrics (confusion matrix, macro/binary F1, AUC) & RollingMetrics
+│   ├── pipeline.py                 # Streaming Pipeline with Transformer Snapshot Pattern & raw buffer
+│   ├── stream.py                   # StreamTrainer (prequential test-then-train coordinator, memory proxy)
+│   ├── io.py                       # Pure-Python CSVReader (RFC-4180 parsing, chunk generator)
+│   └── visualise.py                # Reusable Matplotlib visualisations (metric trajectory, model comparison)
+├── tests/                          # 400 automated pytest tests (281 baseline + 119 streaming)
+│   ├── test_tree.py                # Decision tree split evaluation & buffered retraining tests
+│   ├── test_preprocessing_streaming.py # Online transformer robustness & edge-case tests
+│   ├── test_stats_streaming.py     # StreamingStats moments & histogram tests
+│   ├── test_metrics_streaming.py   # Atomic StreamingMetrics & RollingMetrics tests
+│   ├── test_pipeline_streaming.py  # Pipeline snapshot pattern & coordinate consistency tests
+│   ├── test_stream.py              # StreamTrainer prequential protocol tests
+│   ├── test_io_streaming.py        # CSVReader RFC-4180 parsing & chunk iteration tests
+│   ├── test_visualise.py           # Matplotlib visualisation validation tests
+│   ├── test_integration_streaming.py # 6 mandatory end-to-end integration scenarios
+│   └── test_*.py                   # 281 original baseline tests
+├── demo/                           # Interactive demonstration notebooks and datasets
+│   ├── stream_demo.ipynb           # Fully executed streaming quickstart notebook (Assignment 2.2)
+│   ├── stream_demo_dataset.csv     # 1,200-sample streaming CSV fixture with missing values
+│   ├── quickstart.ipynb            # Batch core demonstration notebook (Assignment 2.1)
+│   ├── sample_data.csv             # 200-row batch CSV dataset
+│   └── sample_data.tsv             # Tab-separated dataset
 ├── benchmark/                      # Performance benchmarking suite
-│   ├── run_benchmarks.py           # Automated runner comparing Python loops vs vectorised code
-│   └── results.md                  # Reproducible benchmark output table and hardware details
-├── pyproject.toml                  # Standard packaging and dependency configuration
-├── BUGLOG.md                       # Structured defect tracking, root causes, and regression tests
-├── CONVENTIONS.md                  # Architectural conventions, shape standards, and error rules
-└── README.md                       # Project documentation, quickstart, and contributions
+│   ├── benchmark_streaming.py      # Split search (loop vs vec) & buffer-size tradeoff benchmarks
+│   ├── results/                    # Generated benchmark outputs
+│   │   ├── results_streaming.md    # Benchmark markdown tables and performance analysis
+│   │   ├── streaming_benchmark_results.json # Raw benchmark metric JSON
+│   │   ├── loop_vs_vectorized.png  # Latency and speedup plot
+│   │   └── buffer_size_tradeoff.png# Throughput, latency, and accuracy tradeoff plot
+│   ├── run_benchmarks.py           # Assignment 2.1 core benchmarking script
+│   └── results.md                  # Assignment 2.1 benchmark summary
+├── report/                         # Technical report
+│   └── report.md                   # Formal technical report structured for <= 4-page PDF export
+├── pyproject.toml                  # Packaging configuration (supports editable install)
+├── BUGLOG.md                       # Structured defect tracking & regression tests
+├── CONVENTIONS.md                  # Architectural conventions and design principles
+└── README.md                       # Project documentation & usage guides
 ```
 
 ---
 
-## 3. Installation & Setup
+## 3. Quickstart: Streaming Machine Learning
 
-NumCompute requires **Python 3.9+** and **NumPy 1.24+**.
+```python
+from numcompute_stream.io import CSVReader
+from numcompute_stream.preprocessing import Imputer, StandardScaler
+from numcompute_stream.tree import DecisionTreeClassifier
+from numcompute_stream.pipeline import Pipeline
+from numcompute_stream.stream import StreamTrainer
+
+# 1. Initialize lazy CSV stream (RFC-4180 compliant)
+reader = CSVReader("demo/stream_demo_dataset.csv", target_column="target")
+
+# 2. Build pipeline with Transformer Snapshot Pattern (avoids coordinate drift)
+pipe = Pipeline([
+    ("imputer", Imputer(strategy="mean")),
+    ("scaler", StandardScaler()),
+    ("tree", DecisionTreeClassifier(buffer_size=150, max_depth=5, random_state=42)),
+], buffer_size=150)
+
+# 3. Stream with strict prequential test-then-train evaluation
+trainer = StreamTrainer(pipe)
+
+for X_chunk, y_chunk in reader.iter_chunks(chunk_size=75):
+    log = trainer.fit_chunk(X_chunk, y_chunk)
+    print(f"Chunk {log['chunk_index']}: Acc={log['chunk_accuracy']}, "
+          f"CumulAcc={log['cumulative_accuracy']:.3f}, Retrained={log['retrained']}")
+```
+
+---
+
+## 4. Installation & Setup
+
+NumCompute requires **Python 3.9+** and **NumPy 1.24+** (and `matplotlib >= 3.5` for visualisations).
 
 ### Step 1: Clone Repository & Create Virtual Environment
 
-On macOS/Linux (resolves PEP 668 `externally-managed-environment` restriction):
-
 ```bash
-# Clone the repository
 git clone https://github.com/DivyViradiya/NumCompute.git
 cd NumCompute
 
-# Create and activate virtual environment
 python3 -m venv ~/numcompute-venv
 source ~/numcompute-venv/bin/activate
 
-# Upgrade pip and install package in editable development mode
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-On Windows (Command Prompt / PowerShell):
+### Step 2: Run the Unit & Integration Tests
 
-```cmd
-python -m venv venv
-venv\Scripts\activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-```
-
-### Step 2: Run the Unit Tests
-
-Execute the test suite using `pytest`:
+Execute the complete 400-test suite with zero warnings allowed:
 
 ```bash
-python -m pytest tests -q
+python -m pytest -W error tests -q
 ```
 Expected output:
 ```text
-281 passed in ~0.35s
+400 passed in ~0.97s
 ```
 
-Run tests with warnings treated as errors and doctest verification:
+Run doctest verification across all modules:
+```bash
+python -m pytest --doctest-modules numcompute numcompute_stream
+```
+
+### Step 3: Run Streaming Benchmarks
+
+Execute the automated benchmark harness:
+```bash
+python benchmark/benchmark_streaming.py
+```
+This generates:
+- `benchmark/results/results_streaming.md`
+- `benchmark/results/streaming_benchmark_results.json`
+- `benchmark/results/loop_vs_vectorized.png`
+- `benchmark/results/buffer_size_tradeoff.png`
 ```bash
 python -m pytest tests -W error -q
 python -m doctest numcompute/*.py

@@ -1,0 +1,118 @@
+{
+  "benchmark_metadata": {
+    "timestamp": "2026-11-13 17:02:44",
+    "python_version": "3.15.0",
+    "numpy_version": "2.5.4"
+  },
+  "split_evaluation": [
+    {
+      "n_samples": 100,
+      "loop_time_sec": 0.00047556679928675296,
+      "vectorized_time_sec": 7.505840039812028e-05,
+      "speedup": 6.335957024986943,
+      "gain_difference": 0.0
+    },
+    {
+      "n_samples": 500,
+      "loop_time_sec": 0.002071583400538657,
+      "vectorized_time_sec": 0.00021696639887522907,
+      "speedup": 9.547945724674,
+      "gain_difference": 5.551115123125783e-17
+    },
+    {
+      "n_samples": 1000,
+      "loop_time_sec": 0.004221383601543493,
+      "vectorized_time_sec": 0.00042192479886580256,
+      "speedup": 10.00506159602661,
+      "gain_difference": 2.7755575615628914e-17
+    },
+    {
+      "n_samples": 2000,
+      "loop_time_sec": 0.008294024800125043,
+      "vectorized_time_sec": 0.000828900198393967,
+      "speedup": 10.006059615132322,
+      "gain_difference": 4.0766001685454967e-17
+    },
+    {
+      "n_samples": 5000,
+      "loop_time_sec": 0.02121530000003986,
+      "vectorized_time_sec": 0.0021325084002455697,
+      "speedup": 9.948518841753122,
+      "gain_difference": 4.163336342344337e-17
+    }
+  ],
+  "buffer_size_tradeoff": [
+    {
+      "buffer_size": 50,
+      "total_samples": 5000,
+      "chunk_size": 100,
+      "retrain_count": 50,
+      "total_time_sec": 0.10768858300434658,
+      "throughput_samples_per_sec": 46430.17728070753,
+      "mean_fit_time_per_chunk_ms": 2.0821517196600325,
+      "mean_score_time_per_chunk_ms": 0.05733416008297354,
+      "peak_memory_bytes": 5136,
+      "final_cumulative_accuracy": 0.7832653061224489
+    },
+    {
+      "buffer_size": 100,
+      "total_samples": 5000,
+      "chunk_size": 100,
+      "retrain_count": 50,
+      "total_time_sec": 0.10503562499798136,
+      "throughput_samples_per_sec": 47602.89663717518,
+      "mean_fit_time_per_chunk_ms": 2.0300816000963096,
+      "mean_score_time_per_chunk_ms": 0.05691665937774815,
+      "peak_memory_bytes": 5136,
+      "final_cumulative_accuracy": 0.7832653061224489
+    },
+    {
+      "buffer_size": 250,
+      "total_samples": 5000,
+      "chunk_size": 100,
+      "retrain_count": 16,
+      "total_time_sec": 0.07820183299918426,
+      "throughput_samples_per_sec": 63937.12024694045,
+      "mean_fit_time_per_chunk_ms": 1.4897541608661413,
+      "mean_score_time_per_chunk_ms": 0.05799424019642174,
+      "peak_memory_bytes": 15248,
+      "final_cumulative_accuracy": 0.823404255319149
+    },
+    {
+      "buffer_size": 500,
+      "total_samples": 5000,
+      "chunk_size": 100,
+      "retrain_count": 10,
+      "total_time_sec": 0.06877529200573917,
+      "throughput_samples_per_sec": 72700.52738682315,
+      "mean_fit_time_per_chunk_ms": 1.3008725001418497,
+      "mean_score_time_per_chunk_ms": 0.057184939651051536,
+      "peak_memory_bytes": 23760,
+      "final_cumulative_accuracy": 0.836
+    },
+    {
+      "buffer_size": 1000,
+      "total_samples": 5000,
+      "chunk_size": 100,
+      "retrain_count": 5,
+      "total_time_sec": 0.05885558400041191,
+      "throughput_samples_per_sec": 84953.70634611334,
+      "mean_fit_time_per_chunk_ms": 1.1107833597634453,
+      "mean_score_time_per_chunk_ms": 0.050618300010683015,
+      "peak_memory_bytes": 44464,
+      "final_cumulative_accuracy": 0.8405
+    },
+    {
+      "buffer_size": 2500,
+      "total_samples": 5000,
+      "chunk_size": 100,
+      "retrain_count": 2,
+      "total_time_sec": 0.05162745800043922,
+      "throughput_samples_per_sec": 96847.68907191716,
+      "mean_fit_time_per_chunk_ms": 0.9881766802573111,
+      "mean_score_time_per_chunk_ms": 0.03188921997207217,
+      "peak_memory_bytes": 104592,
+      "final_cumulative_accuracy": 0.8508
+    }
+  ]
+}
