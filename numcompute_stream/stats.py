@@ -5,7 +5,7 @@ quantiles, and histograms over data streams.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from numcompute.utils import as_float_array
@@ -16,14 +16,25 @@ __all__ = ["StreamingStats", "update_stats"]
 class StreamingStats:
     """Online per-feature statistics tracker using Chan et al.'s parallel formula.
 
-    Maintains running count, mean, and M2 accumulator in O(d) memory, matching
-    Welford's algorithm on single-sample updates and parallel Chan algorithm on chunk updates.
-    Also tracks streaming quantiles and fixed-bin histograms.
+    Maintains running count, mean, and M2 moments in strictly bounded O(d) memory,
+    matching Welford's algorithm on single-sample updates and parallel Chan updates
+    on chunk updates.
+
+    Memory Note
+    -----------
+    Running count, mean, variance, and fixed-bin histogram counts operate in strictly
+    bounded O(d) memory across an indefinite number of chunks. Exact quantiles retain
+    observed sample history O(N * d) to ensure mathematically identical results to
+    batch NumPy quantiles.
 
     Parameters
     ----------
     ddof : int, optional
         Delta degrees of freedom for default variance divisor (count - ddof). Default 0.
+    hist_bins : int, sequence of float, or None, optional
+        Optional predefined bin edges or number of bins for streaming histogram.
+    hist_range : (float, float) or None, optional
+        Optional fixed lower and upper range for streaming histogram bins.
 
     Attributes
     ----------
@@ -35,10 +46,15 @@ class StreamingStats:
         Running arithmetic mean per feature (NaN if no observations).
     """
 
-    def __init__(self, ddof: int = 0) -> None:
-        if ddof < 0:
-            raise ValueError(f"ddof must be non-negative, got {ddof}")
-        self.ddof = ddof
+    def __init__(
+        self,
+        ddof: int = 0,
+        hist_bins: Optional[Union[int, Sequence[float], np.ndarray]] = None,
+        hist_range: Optional[Tuple[float, float]] = None,
+    ) -> None:
+        if isinstance(ddof, bool) or not isinstance(ddof, (int, np.integer)) or ddof < 0:
+            raise ValueError(f"ddof must be a non-negative int, got {ddof!r}")
+        self.ddof = int(ddof)
 
         self.n_features_: Optional[int] = None
         self._n = np.zeros(0, dtype=float)
@@ -48,9 +64,18 @@ class StreamingStats:
         # Buffer for exact quantile calculation
         self._sample_buffer: List[np.ndarray] = []
 
-        # Histogram state
+        # Streaming histogram accumulator state
+        self._hist_range = hist_range
         self._bin_edges: Optional[np.ndarray] = None
         self._hist_counts: Optional[np.ndarray] = None
+
+        if hist_bins is not None and hist_range is not None:
+            if isinstance(hist_bins, (int, np.integer)):
+                self._bin_edges = np.linspace(hist_range[0], hist_range[1], hist_bins + 1)
+                self._hist_counts = np.zeros(hist_bins, dtype=np.int64)
+            else:
+                self._bin_edges = np.asarray(hist_bins, dtype=float)
+                self._hist_counts = np.zeros(len(self._bin_edges) - 1, dtype=np.int64)
 
     def _init(self, n_features: int) -> None:
         self.n_features_ = n_features
@@ -105,11 +130,10 @@ class StreamingStats:
         # Retain for exact quantile tracking
         self._sample_buffer.append(arr.copy())
 
-        # Update histogram counts if edges already established
-        if self._bin_edges is not None and self._hist_counts is not None:
-            # Flatten 2D chunk values omitting NaN
-            flat_vals = arr[~np.isnan(arr)]
-            if flat_vals.size > 0:
+        # Genuinely incremental histogram count updates
+        flat_vals = arr[valid]
+        if flat_vals.size > 0:
+            if self._bin_edges is not None and self._hist_counts is not None:
                 counts, _ = np.histogram(flat_vals, bins=self._bin_edges)
                 self._hist_counts += counts
 
@@ -144,10 +168,10 @@ class StreamingStats:
             return np.zeros(0, dtype=float)
 
         d = self.ddof if ddof is None else ddof
-        if d < 0:
-            raise ValueError(f"ddof must be non-negative, got {d}")
+        if isinstance(d, bool) or not isinstance(d, (int, np.integer)) or d < 0:
+            raise ValueError(f"ddof must be a non-negative int, got {d!r}")
 
-        denom = self._n - d
+        denom = self._n - int(d)
         return np.where(denom > 0, self._m2 / np.where(denom > 0, denom, 1.0), np.nan)
 
     def std(self, ddof: Optional[int] = None) -> np.ndarray:
@@ -164,18 +188,27 @@ class StreamingStats:
 
         Returns
         -------
-        quantiles : ndarray of shape (n_features,) or (len(q), n_features)
+        quantiles : ndarray of shape (n_features,) for scalar q, or (len(q), n_features)
             Per-feature quantiles.
         """
         if self.n_features_ is None or not self._sample_buffer:
             raise ValueError("No data has been observed yet.")
 
+        is_scalar = isinstance(q, (int, float, np.floating, np.integer)) and not isinstance(q, bool)
         q_arr = np.asarray(q, dtype=float)
+
+        if q_arr.size == 0:
+            raise ValueError("q must not be empty")
+        if not np.all(np.isfinite(q_arr)):
+            raise ValueError(f"Quantile values must be finite, got {q!r}")
         if np.any(q_arr < 0.0) or np.any(q_arr > 1.0):
             raise ValueError(f"Quantile q must be in [0.0, 1.0], got {q!r}")
 
         all_samples = np.vstack(self._sample_buffer)
-        return np.nanquantile(all_samples, q=q_arr, axis=0, method="linear")
+        res = np.nanquantile(all_samples, q=q_arr, axis=0, method="linear")
+        if is_scalar and res.ndim > 1:
+            return res.squeeze(axis=0)
+        return res
 
     def histogram(
         self,
@@ -183,6 +216,9 @@ class StreamingStats:
         range: Optional[Tuple[float, float]] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Compute or retrieve streaming histogram over observed samples.
+
+        If fixed bin edges were already initialized, returns the running accumulated counts.
+        Otherwise, initializes fixed bin edges from data and accumulates subsequent chunks.
 
         Parameters
         ----------
@@ -198,6 +234,9 @@ class StreamingStats:
         bin_edges : ndarray of shape (n_bins + 1,)
             Bin boundary edges.
         """
+        if self._bin_edges is not None and self._hist_counts is not None:
+            return self._hist_counts.copy(), self._bin_edges.copy()
+
         if not self._sample_buffer:
             raise ValueError("No data has been observed yet.")
 
@@ -224,20 +263,7 @@ class StreamingStats:
 
 
 def update_stats(existing_stats: Optional[StreamingStats], X_chunk: Any) -> StreamingStats:
-    """Convenience functional update for streaming statistics.
-
-    Parameters
-    ----------
-    existing_stats : StreamingStats or None
-        Accumulator instance to update, or None to create a new one.
-    X_chunk : array-like
-        Incoming data chunk.
-
-    Returns
-    -------
-    stats : StreamingStats
-        Updated statistics object.
-    """
+    """Convenience functional update for streaming statistics."""
     if existing_stats is None:
         stats = StreamingStats()
     else:

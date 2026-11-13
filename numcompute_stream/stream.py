@@ -1,10 +1,11 @@
 """Stream Trainer and Chunk Coordinator.
 
 Coordinates chunk-wise training, prequential evaluation (test-then-train),
-timing instrumentation, memory estimation, and per-chunk structured logging.
+timing instrumentation, recursive memory estimation, and per-chunk structured logging.
 """
 from __future__ import annotations
 
+import copy
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -13,9 +14,27 @@ import numpy as np
 __all__ = ["StreamTrainer"]
 
 
+def _estimate_tree_node_bytes(node: Any) -> int:
+    """Recursively estimate memory footprint of a decision tree node structure."""
+    if node is None:
+        return 0
+    total = sys.getsizeof(node)
+    probs = getattr(node, "probabilities", None)
+    if isinstance(probs, np.ndarray):
+        total += probs.nbytes
+    left = getattr(node, "left", None)
+    right = getattr(node, "right", None)
+    if left is not None:
+        total += _estimate_tree_node_bytes(left)
+    if right is not None:
+        total += _estimate_tree_node_bytes(right)
+    return total
+
+
 def _estimate_memory(obj: Any) -> int:
-    """Compute approximate memory usage of an estimator or pipeline in bytes."""
+    """Compute approximate structural memory footprint in bytes."""
     total_bytes = sys.getsizeof(obj)
+
     # Check for buffers in tree or pipeline
     for attr in ("_X_buffer", "_y_buffer", "_raw_X_buffer", "_raw_y_buffer"):
         buf = getattr(obj, attr, None)
@@ -24,15 +43,27 @@ def _estimate_memory(obj: Any) -> int:
             for item in buf:
                 if isinstance(item, np.ndarray):
                     total_bytes += item.nbytes
-    # Check steps if pipeline
-    steps = getattr(obj, "steps", None)
-    if isinstance(steps, list):
-        for name, step in steps:
-            total_bytes += sys.getsizeof(step)
-            for sub_attr in ("mean_", "var_", "scale_", "statistics_"):
-                val = getattr(step, sub_attr, None)
-                if isinstance(val, np.ndarray):
-                    total_bytes += val.nbytes
+
+    # Check tree structure if standalone DecisionTreeClassifier
+    tree_root = getattr(obj, "tree_", None)
+    if tree_root is not None:
+        total_bytes += _estimate_tree_node_bytes(tree_root)
+
+    # Check pipeline steps and committed transformers
+    for steps_attr in ("steps", "_committed_transformers"):
+        steps = getattr(obj, steps_attr, None)
+        if isinstance(steps, list):
+            total_bytes += sys.getsizeof(steps)
+            for name, step in steps:
+                total_bytes += sys.getsizeof(step)
+                for sub_attr in ("mean_", "var_", "scale_", "statistics_"):
+                    val = getattr(step, sub_attr, None)
+                    if isinstance(val, np.ndarray):
+                        total_bytes += val.nbytes
+                step_tree = getattr(step, "tree_", None)
+                if step_tree is not None:
+                    total_bytes += _estimate_tree_node_bytes(step_tree)
+
     return int(total_bytes)
 
 
@@ -41,7 +72,7 @@ class StreamTrainer:
 
     Implements a strict prequential protocol (test-then-train): each incoming chunk
     is evaluated against the currently fitted model *before* passing it to ``partial_fit``.
-    Records per-chunk metrics, timing, retrain events, and approximate memory footprint.
+    Records per-chunk metrics, timing, retrain events, and structural memory footprint.
 
     Parameters
     ----------
@@ -123,7 +154,6 @@ class StreamTrainer:
 
         self.n_samples_seen_ += n_samples
 
-        # Cumulative prequential accuracy
         if self._cumulative_evaluated > 0:
             cum_acc: Optional[float] = float(self._cumulative_correct / self._cumulative_evaluated)
             cum_err: Optional[float] = float(1.0 - cum_acc)
@@ -148,12 +178,12 @@ class StreamTrainer:
 
         self.logs_.append(log_entry)
         self.chunk_index_ += 1
-        return log_entry
+        return copy.deepcopy(log_entry)
 
     def step(self, X_chunk: Any, y_chunk: Any) -> Dict[str, Any]:
         """Alias for fit_chunk."""
         return self.fit_chunk(X_chunk, y_chunk)
 
     def get_logs(self) -> List[Dict[str, Any]]:
-        """Return full history of structured chunk logs."""
-        return list(self.logs_)
+        """Return deep copy of history of structured chunk logs."""
+        return copy.deepcopy(self.logs_)

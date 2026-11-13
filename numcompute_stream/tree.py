@@ -52,6 +52,17 @@ class _Node:
         self.is_leaf = is_leaf
 
 
+def _safe_midpoint(a: float, b: float) -> float:
+    """Compute overflow-safe threshold midpoint between two adjacent floats."""
+    mid = float(a / 2.0 + b / 2.0)
+    if a < mid < b:
+        return mid
+    diff_mid = float(a + (b - a) / 2.0)
+    if a < diff_mid < b:
+        return diff_mid
+    return a
+
+
 def _compute_impurity(counts: np.ndarray, n_samples: int, criterion: str) -> float:
     """Compute impurity (Gini or entropy) from class counts.
 
@@ -75,7 +86,6 @@ def _compute_impurity(counts: np.ndarray, n_samples: int, criterion: str) -> flo
     if criterion == "gini":
         return float(1.0 - np.sum(probs**2))
     elif criterion == "entropy":
-        # - sum(p * log2(p)), ignoring p == 0
         nonzero_p = probs[probs > 0]
         if nonzero_p.size == 0:
             return 0.0
@@ -93,7 +103,7 @@ def _evaluate_feature_splits(
 ) -> Tuple[float, Optional[float]]:
     """Find the best split threshold for a single numeric feature.
 
-    Uses NumPy cumulative sums for O(N * C) vectorised split evaluation.
+    Uses fully vectorised NumPy cumulative counts and batch impurity evaluation.
 
     Parameters
     ----------
@@ -119,7 +129,7 @@ def _evaluate_feature_splits(
     if n_samples < 2:
         return 0.0, None
 
-    # Sort values and labels along this feature
+    # Sort values and labels along this feature (stable sort)
     order = np.argsort(x_col, kind="mergesort")
     x_sorted = x_col[order]
     y_sorted = y_encoded[order]
@@ -137,43 +147,52 @@ def _evaluate_feature_splits(
     left_counts = np.cumsum(y_one_hot, axis=0)
     total_counts = left_counts[-1]
 
-    # Only evaluate at valid split boundaries
-    left_counts_splits = left_counts[split_indices]
-    n_left_arr = split_indices + 1
-    n_right_arr = n_samples - n_left_arr
-    right_counts_splits = total_counts - left_counts_splits
+    # Cumulative counts at split boundaries
+    left_counts_splits = left_counts[split_indices].astype(float)
+    n_left_arr = (split_indices + 1).astype(float)
+    n_right_arr = (n_samples - n_left_arr).astype(float)
+    right_counts_splits = total_counts.astype(float) - left_counts_splits
 
-    best_gain = 0.0
-    best_threshold: Optional[float] = None
+    # Compute child class probabilities across all candidate splits simultaneously
+    p_left = left_counts_splits / n_left_arr[:, None]
+    p_right = right_counts_splits / n_right_arr[:, None]
 
-    # Evaluate candidate splits
-    for idx, split_idx in enumerate(split_indices):
-        n_left = int(n_left_arr[idx])
-        n_right = int(n_right_arr[idx])
-        if n_left == 0 or n_right == 0:
-            continue
+    # Vectorised impurity calculation across candidate splits
+    if criterion == "gini":
+        imp_left = 1.0 - np.sum(p_left**2, axis=1)
+        imp_right = 1.0 - np.sum(p_right**2, axis=1)
+    elif criterion == "entropy":
+        # Vectorised entropy with safe zero suppression
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log_p_l = np.where(p_left > 0, np.log2(p_left), 0.0)
+            log_p_r = np.where(p_right > 0, np.log2(p_right), 0.0)
+        imp_left = -np.sum(p_left * log_p_l, axis=1)
+        imp_right = -np.sum(p_right * log_p_r, axis=1)
+    else:
+        raise ValueError(f"criterion must be 'gini' or 'entropy', got {criterion!r}")
 
-        left_cnt = left_counts_splits[idx]
-        right_cnt = right_counts_splits[idx]
+    weighted_imp = (n_left_arr / n_samples) * imp_left + (n_right_arr / n_samples) * imp_right
+    gains = parent_impurity - weighted_imp
 
-        imp_left = _compute_impurity(left_cnt, n_left, criterion)
-        imp_right = _compute_impurity(right_cnt, n_right, criterion)
+    # Candidate thresholds using safe midpoint
+    thresholds = np.array([
+        _safe_midpoint(x_sorted[idx], x_sorted[idx + 1]) for idx in split_indices
+    ])
 
-        weighted_imp = (n_left / n_samples) * imp_left + (n_right / n_samples) * imp_right
-        gain = parent_impurity - weighted_imp
+    # Find candidate splits with positive improvement
+    valid_gains_mask = gains > 1e-12
+    if not np.any(valid_gains_mask):
+        return 0.0, None
 
-        # Use midpoint as threshold
-        threshold = float((x_sorted[split_idx] + x_sorted[split_idx + 1]) / 2.0)
+    max_gain = float(np.max(gains))
+    if max_gain <= 1e-12:
+        return 0.0, None
 
-        # Deterministic tie-breaking: prefer strictly higher gain, then lower threshold
-        if gain > best_gain + 1e-12:
-            best_gain = gain
-            best_threshold = threshold
-        elif abs(gain - best_gain) <= 1e-12 and best_threshold is not None:
-            if threshold < best_threshold:
-                best_threshold = threshold
+    # Deterministic tie-breaking: choose lowest threshold among optimal gains
+    best_gain_indices = np.where(np.abs(gains - max_gain) <= 1e-12)[0]
+    best_split_idx = best_gain_indices[np.argmin(thresholds[best_gain_indices])]
 
-    return best_gain, best_threshold
+    return float(gains[best_split_idx]), float(thresholds[best_split_idx])
 
 
 class DecisionTreeClassifier:
@@ -181,7 +200,7 @@ class DecisionTreeClassifier:
 
     Implements a recursive, depth-limited classification decision tree from scratch
     using pure NumPy. Supports incremental ingestion via ``partial_fit`` with
-    strict buffered retraining semantics.
+    strict buffered retraining semantics and atomic state updates.
 
     Parameters
     ----------
@@ -192,12 +211,7 @@ class DecisionTreeClassifier:
         Minimum number of samples required to split an internal node. Must be >= 2.
         Default 2.
     max_features : int, float, {"sqrt", "log2"} or None, optional
-        Number of features to consider when looking for the best split:
-        - If int: consider ``max_features`` features directly (1 <= max_features <= n_features).
-        - If float: consider ``max(1, int(max_features * n_features))`` features (0 < max_features <= 1.0).
-        - If "sqrt": consider ``max(1, int(sqrt(n_features)))``.
-        - If "log2": consider ``max(1, int(log2(n_features)))``.
-        - If None: evaluate all features. Default None.
+        Number of features to consider when looking for the best split.
     criterion : {"gini", "entropy"}, optional
         Impurity measure to evaluate split quality. Default "gini".
     buffer_size : int, optional
@@ -205,23 +219,6 @@ class DecisionTreeClassifier:
         Must be >= 1. Default 500.
     random_state : int or None, optional
         Seed for pseudo-random feature selection when ``max_features`` is set. Default None.
-
-    Attributes
-    ----------
-    is_fitted_ : bool
-        True if the tree has been trained at least once.
-    classes_ : ndarray of shape (n_classes,)
-        Sorted unique class labels observed during the most recent fit.
-    n_classes_ : int
-        Number of unique classes.
-    n_features_in_ : int
-        Number of input features observed.
-    n_retrains_ : int
-        Total number of successful retraining operations executed.
-    n_samples_seen_ : int
-        Total number of streaming samples ingested via ``partial_fit``.
-    tree_ : _Node or None
-        Root node of the most recently fitted tree structure.
     """
 
     def __init__(
@@ -337,7 +334,6 @@ class DecisionTreeClassifier:
         """Validate input feature matrix X and target vector y."""
         X_arr = check_2d(X, name="X", allow_empty=False)
 
-        # Ensure float dtype for features
         if not np.issubdtype(X_arr.dtype, np.number):
             raise TypeError("X must contain numeric data")
         X_arr = X_arr.astype(float, copy=False)
@@ -380,20 +376,18 @@ class DecisionTreeClassifier:
         y_encoded: np.ndarray,
         current_depth: int,
         k_features: int,
+        n_classes: int,
         rng: np.random.Generator,
     ) -> _Node:
         """Recursively construct decision tree nodes."""
         n_samples = len(X)
         n_features = X.shape[1]
 
-        # Calculate class distribution at current node
-        class_counts = np.bincount(y_encoded, minlength=self.n_classes_)
+        class_counts = np.bincount(y_encoded, minlength=n_classes)
         probabilities = class_counts / n_samples
-        # Deterministic leaf value: lowest index among majority classes
         majority_class_idx = int(np.argmax(class_counts))
         impurity = _compute_impurity(class_counts, n_samples, self.criterion)
 
-        # Base leaf node representation
         leaf_node = _Node(
             value=majority_class_idx,
             probabilities=probabilities,
@@ -404,14 +398,13 @@ class DecisionTreeClassifier:
 
         # Stopping conditions
         if (
-            np.count_nonzero(class_counts) <= 1  # Pure node
+            np.count_nonzero(class_counts) <= 1
             or (self.max_depth is not None and current_depth >= self.max_depth)
             or n_samples < self.min_samples_split
             or impurity <= 1e-12
         ):
             return leaf_node
 
-        # Feature selection
         if k_features < n_features:
             feature_indices = rng.choice(n_features, size=k_features, replace=False)
             feature_indices = np.sort(feature_indices)
@@ -422,12 +415,10 @@ class DecisionTreeClassifier:
         best_feature: Optional[int] = None
         best_threshold: Optional[float] = None
 
-        # Search best split across candidate features
         for f_idx in feature_indices:
             gain, thresh = _evaluate_feature_splits(
-                X[:, f_idx], y_encoded, self.n_classes_, self.criterion, impurity
+                X[:, f_idx], y_encoded, n_classes, self.criterion, impurity
             )
-            # Deterministic tie-breaking: prefer higher gain, then lower feature index, then lower threshold
             if gain > best_gain + 1e-12:
                 best_gain = gain
                 best_feature = int(f_idx)
@@ -443,19 +434,17 @@ class DecisionTreeClassifier:
         if best_gain <= 1e-12 or best_feature is None or best_threshold is None:
             return leaf_node
 
-        # Partition data
         left_mask = X[:, best_feature] <= best_threshold
         right_mask = ~left_mask
 
-        # If a child would be empty, do not split
         if not np.any(left_mask) or not np.any(right_mask):
             return leaf_node
 
         left_child = self._build_tree(
-            X[left_mask], y_encoded[left_mask], current_depth + 1, k_features, rng
+            X[left_mask], y_encoded[left_mask], current_depth + 1, k_features, n_classes, rng
         )
         right_child = self._build_tree(
-            X[right_mask], y_encoded[right_mask], current_depth + 1, k_features, rng
+            X[right_mask], y_encoded[right_mask], current_depth + 1, k_features, n_classes, rng
         )
 
         return _Node(
@@ -470,23 +459,26 @@ class DecisionTreeClassifier:
             is_leaf=False,
         )
 
-    def _fit_tree(self, X: np.ndarray, y: np.ndarray) -> _Node:
-        """Train a tree structure on validated arrays X and y."""
+    def _fit_candidate(
+        self, X: np.ndarray, y: np.ndarray
+    ) -> Tuple[_Node, np.ndarray, int, int]:
+        """Fit a candidate tree in local variables without mutating self (atomic)."""
         classes, y_encoded = np.unique(y, return_inverse=True)
-        self.classes_ = classes
-        self.n_classes_ = len(classes)
-        self.n_features_in_ = X.shape[1]
+        n_classes = len(classes)
+        n_features = X.shape[1]
 
-        k_features = self._resolve_max_features(self.n_features_in_)
+        k_features = self._resolve_max_features(n_features)
         rng = np.random.default_rng(self.random_state)
 
-        return self._build_tree(
+        root = self._build_tree(
             X=X,
             y_encoded=y_encoded,
             current_depth=0,
             k_features=k_features,
+            n_classes=n_classes,
             rng=rng,
         )
+        return root, classes, n_classes, n_features
 
     def fit(self, X: Any, y: Any) -> "DecisionTreeClassifier":
         """Build a decision tree classifier from training set (X, y).
@@ -506,20 +498,22 @@ class DecisionTreeClassifier:
         X_arr, y_arr = self._validate_data(X, y, check_features=False)
         assert y_arr is not None
 
-        new_tree = self._fit_tree(X_arr, y_arr)
+        # Build candidate tree atomically
+        new_tree, new_classes, new_n_classes, new_n_features = self._fit_candidate(
+            X_arr, y_arr
+        )
 
+        # Commit state together
         self.tree_ = new_tree
+        self.classes_ = new_classes
+        self.n_classes_ = new_n_classes
+        self.n_features_in_ = new_n_features
         self.is_fitted_ = True
         self.n_retrains_ += 1
         return self
 
     def partial_fit(self, X_chunk: Any, y_chunk: Any) -> "DecisionTreeClassifier":
         """Incremental fit on a chunk of data with buffered retraining.
-
-        Appends the incoming chunk to the pending buffer. When the buffer contains
-        at least ``buffer_size`` samples, retrains on all currently pending samples
-        (including any overshoot) and clears the buffer upon successful training.
-        Predictions between retrains remain served by the prior fitted tree.
 
         Parameters
         ----------
@@ -533,7 +527,6 @@ class DecisionTreeClassifier:
         self : DecisionTreeClassifier
             Fitted classifier.
         """
-        # If empty chunk, return self unchanged
         raw_X = np.asarray(X_chunk)
         if raw_X.size == 0 or len(raw_X) == 0:
             return self
@@ -542,11 +535,9 @@ class DecisionTreeClassifier:
         X_arr, y_arr = self._validate_data(X_chunk, y_chunk, check_features=check_features)
         assert y_arr is not None
 
-        # Set n_features_in_ if first chunk
         if self.n_features_in_ is None:
             self.n_features_in_ = X_arr.shape[1]
 
-        # Append chunk to pending buffer
         self._X_buffer.append(X_arr)
         self._y_buffer.append(y_arr)
         chunk_len = len(X_arr)
@@ -558,11 +549,16 @@ class DecisionTreeClassifier:
             X_train = np.vstack(self._X_buffer)
             y_train = np.concatenate(self._y_buffer)
 
-            # Fit new tree; if it raises, buffer and old tree remain intact
-            new_tree = self._fit_tree(X_train, y_train)
+            # Build candidate tree atomically; if it raises, old tree/metadata remain intact
+            new_tree, new_classes, new_n_classes, new_n_features = self._fit_candidate(
+                X_train, y_train
+            )
 
-            # Retraining succeeded: commit new tree and clear buffer
+            # Atomic commit of new model state and buffer clear
             self.tree_ = new_tree
+            self.classes_ = new_classes
+            self.n_classes_ = new_n_classes
+            self.n_features_in_ = new_n_features
             self.is_fitted_ = True
             self.n_retrains_ += 1
             self._X_buffer.clear()
@@ -572,15 +568,17 @@ class DecisionTreeClassifier:
         return self
 
     def flush(self) -> "DecisionTreeClassifier":
-        """Force a retrain on any remaining pending samples in the buffer.
-
-        If the buffer is empty, no retraining occurs.
-        """
+        """Force a retrain on any remaining pending samples in the buffer."""
         if self._pending_count > 0:
             X_train = np.vstack(self._X_buffer)
             y_train = np.concatenate(self._y_buffer)
-            new_tree = self._fit_tree(X_train, y_train)
+            new_tree, new_classes, new_n_classes, new_n_features = self._fit_candidate(
+                X_train, y_train
+            )
             self.tree_ = new_tree
+            self.classes_ = new_classes
+            self.n_classes_ = new_n_classes
+            self.n_features_in_ = new_n_features
             self.is_fitted_ = True
             self.n_retrains_ += 1
             self._X_buffer.clear()
@@ -602,18 +600,7 @@ class DecisionTreeClassifier:
         return curr
 
     def predict_proba(self, X: Any) -> np.ndarray:
-        """Predict class probabilities for X using the most recently trained tree.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Query samples.
-
-        Returns
-        -------
-        proba : ndarray of shape (n_samples, n_classes)
-            Predicted class probabilities.
-        """
+        """Predict class probabilities for X using the most recently trained tree."""
         if not self.is_fitted_ or self.tree_ is None or self.classes_ is None:
             raise NotFittedError("This DecisionTreeClassifier instance is not fitted yet.")
 
@@ -629,18 +616,7 @@ class DecisionTreeClassifier:
         return proba
 
     def predict(self, X: Any) -> np.ndarray:
-        """Predict class for X using the most recently trained tree.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Query samples.
-
-        Returns
-        -------
-        y_pred : ndarray of shape (n_samples,)
-            Predicted class labels.
-        """
+        """Predict class for X using the most recently trained tree."""
         if not self.is_fitted_ or self.tree_ is None or self.classes_ is None:
             raise NotFittedError("This DecisionTreeClassifier instance is not fitted yet.")
 
@@ -656,22 +632,11 @@ class DecisionTreeClassifier:
         return self.classes_[y_indices]
 
     def score(self, X: Any, y: Any) -> float:
-        """Return mean accuracy on test data X and labels y.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Test samples.
-        y : array-like of shape (n_samples,)
-            True labels.
-
-        Returns
-        -------
-        score : float
-            Mean accuracy in [0.0, 1.0].
-        """
-        y_pred = self.predict(X)
+        """Return mean accuracy on test data X and labels y."""
         y_arr = np.asarray(y)
+        if y_arr.ndim != 1:
+            raise ValueError(f"y must be a 1-D array, got shape {y_arr.shape}")
+        y_pred = self.predict(X)
         if len(y_arr) != len(y_pred):
             raise ValueError(
                 f"y shape {y_arr.shape} does not match predictions shape {y_pred.shape}"
@@ -679,11 +644,7 @@ class DecisionTreeClassifier:
         return float(np.mean(y_pred == y_arr))
 
     def get_depth(self) -> int:
-        """Return the depth of the fitted tree.
-
-        Depth is the maximum number of edges from root to any leaf. A tree with
-        only a root leaf has depth 0.
-        """
+        """Return the depth of the fitted tree."""
         if not self.is_fitted_ or self.tree_ is None:
             raise NotFittedError("This DecisionTreeClassifier instance is not fitted yet.")
 

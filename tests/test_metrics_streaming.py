@@ -10,10 +10,37 @@ from numcompute_stream.metrics import RollingMetrics, StreamingMetrics
 # =====================================================================
 # StreamingMetrics Tests
 # =====================================================================
+def test_streaming_metrics_explicit_labels_init_and_rejection():
+    # Explicit labels: must initialize confusion matrix immediately
+    sm = StreamingMetrics(labels=["cat", "dog"])
+    assert sm.confusion_matrix_ is not None
+    assert sm.confusion_matrix_.shape == (2, 2)
+    np.testing.assert_array_equal(sm.confusion_matrix_, np.zeros((2, 2)))
+
+    # Valid update
+    sm.update(["cat", "dog"], ["cat", "cat"])
+    assert sm.n_samples_seen_ == 2
+    assert sm.confusion_matrix_.sum() == 2
+
+    # Unknown label under fixed labels must raise ValueError
+    with pytest.raises(ValueError, match="unknown true label 'bird'"):
+        sm.update(["bird"], ["cat"])
+
+    with pytest.raises(ValueError, match="unknown predicted label 'fish'"):
+        sm.update(["cat"], ["fish"])
+
+
+def test_streaming_metrics_explicit_labels_validation():
+    # Empty labels raises
+    with pytest.raises(ValueError, match="must not be empty"):
+        StreamingMetrics(labels=[])
+
+    # Duplicate labels raises
+    with pytest.raises(ValueError, match="must be unique"):
+        StreamingMetrics(labels=["a", "b", "a"])
+
+
 def test_streaming_metrics_cumulative_accuracy():
-    # Chunk 1: 3/4 correct (75%)
-    # Chunk 2: 1/2 correct (50%)
-    # Overall: 4/6 correct = 66.67%
     yt1 = np.array([0, 1, 0, 1])
     yp1 = np.array([0, 1, 1, 1])  # error at index 2
 
@@ -28,10 +55,11 @@ def test_streaming_metrics_cumulative_accuracy():
     assert np.isclose(sm.compute_accuracy(), 4.0 / 6.0)
     assert sm.n_samples_seen_ == 6
     assert sm.n_chunks_seen_ == 2
+    # Ensure sum of confusion matrix equals n_samples_seen_
+    assert sm.confusion_matrix_.sum() == sm.n_samples_seen_
 
 
 def test_streaming_metrics_confusion_matrix_and_macro_scores():
-    # 3 classes: 0, 1, 2
     yt1 = np.array([0, 1, 2])
     yp1 = np.array([0, 1, 2])  # perfect
 
@@ -44,9 +72,6 @@ def test_streaming_metrics_confusion_matrix_and_macro_scores():
 
     cm = sm.confusion_matrix_
     assert cm is not None
-    # True 0: one pred 0, one pred 1 -> [1, 1, 0]
-    # True 1: two pred 1 -> [0, 2, 0]
-    # True 2: one pred 0, one pred 2 -> [1, 0, 1]
     expected_cm = np.array([
         [1, 1, 0],
         [0, 2, 0],
@@ -65,7 +90,6 @@ def test_streaming_metrics_binary_pos_label():
     yt = np.array(["neg", "pos", "pos", "neg"])
     yp = np.array(["neg", "neg", "pos", "pos"])
 
-    # For pos: TP=1, FP=1, FN=1 -> prec = 1/2, rec = 1/2, f1 = 1/2
     sm = StreamingMetrics(average="binary", pos_label="pos")
     sm.update(yt, yp)
 
@@ -76,7 +100,6 @@ def test_streaming_metrics_binary_pos_label():
 
 
 def test_streaming_metrics_zero_division():
-    # All false positives for class 1
     yt = np.array([0, 0])
     yp = np.array([1, 1])
 
@@ -86,15 +109,24 @@ def test_streaming_metrics_zero_division():
     assert res["accuracy"] == 0.0
 
 
-def test_streaming_metrics_auc():
+def test_streaming_metrics_auc_with_continuous_scores():
     yt1 = np.array([0, 1])
-    yp1 = np.array([0.1, 0.9])
+    yp1 = np.array([0, 1])
+    yscore1 = np.array([0.1, 0.9])
+
     yt2 = np.array([0, 1])
-    yp2 = np.array([0.2, 0.8])
+    yp2 = np.array([0, 1])
+    yscore2 = np.array([0.2, 0.8])
 
     sm = StreamingMetrics()
+    # When no continuous score provided, AUC is None
     sm.update(yt1, yp1)
-    sm.update(yt2, yp2)
+    assert sm.compute_auc() is None
+
+    # When continuous score is provided
+    sm.reset()
+    sm.update(yt1, yp1, y_score_chunk=yscore1)
+    sm.update(yt2, yp2, y_score_chunk=yscore2)
 
     auc_val = sm.compute_auc()
     assert auc_val is not None
@@ -102,11 +134,21 @@ def test_streaming_metrics_auc():
 
 
 def test_streaming_metrics_reset():
+    # Dynamic labels reset
     sm = StreamingMetrics().update([0, 1], [0, 1])
     assert sm.n_samples_seen_ == 2
     sm.reset()
     assert sm.n_samples_seen_ == 0
     assert sm.confusion_matrix_ is None
+    assert sm.labels is None
+
+    # Fixed labels reset retains structure with zeros
+    sm_fixed = StreamingMetrics(labels=[0, 1]).update([0, 1], [0, 1])
+    sm_fixed.reset()
+    assert sm_fixed.n_samples_seen_ == 0
+    assert sm_fixed.confusion_matrix_ is not None
+    assert sm_fixed.confusion_matrix_.shape == (2, 2)
+    np.testing.assert_array_equal(sm_fixed.confusion_matrix_, np.zeros((2, 2)))
 
 
 def test_streaming_metrics_validation_errors():
@@ -125,16 +167,13 @@ def test_streaming_metrics_validation_errors():
 # RollingMetrics Tests
 # =====================================================================
 def test_rolling_metrics_sliding_window_eviction():
-    # Window size 3
     rm = RollingMetrics(window_size=3)
 
-    # Push 3 samples: [1, 1, 1] pred [1, 1, 1] (100% acc)
     rm.update([1, 1, 1], [1, 1, 1])
     assert rm.result()["accuracy"] == 1.0
     assert rm.result()["window_samples"] == 3
 
-    # Push 3 new errors: [0, 0, 0] pred [1, 1, 1]
-    # Completely evicts the older 3 samples! Accuracy should become 0.0
+    # Push 3 new errors -> completely evicts the older 3 samples
     rm.update([0, 0, 0], [1, 1, 1])
     assert rm.result()["accuracy"] == 0.0
     assert rm.result()["window_samples"] == 3
@@ -154,3 +193,10 @@ def test_rolling_metrics_reset():
     assert rm.result()["window_samples"] == 0
     assert rm.result()["accuracy"] == 0.0
 
+
+def test_rolling_metrics_invalid_window_size():
+    with pytest.raises(ValueError, match="window_size"):
+        RollingMetrics(window_size=0)
+
+    with pytest.raises(ValueError, match="window_size"):
+        RollingMetrics(window_size=True)

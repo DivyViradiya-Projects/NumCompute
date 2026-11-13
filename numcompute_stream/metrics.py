@@ -41,13 +41,14 @@ class StreamingMetrics:
     Maintains a running confusion matrix and sample counters so metrics (accuracy,
     precision, recall, F1) are derived from total accumulated counts rather than
     erroneously averaging chunk-level percentages. Also records true labels and
-    prediction scores to compute cumulative ROC AUC.
+    continuous prediction scores to compute cumulative ROC AUC.
 
     Parameters
     ----------
     labels : sequence or None, optional
-        Set of class labels. If None, classes are inferred and ordered
-        deterministically from observed data chunks.
+        Predefined class labels. If provided, must be non-empty and unique.
+        Any chunk containing labels not in this fixed set will raise a ValueError.
+        If None, classes are discovered dynamically and ordered deterministically.
     average : {"binary", "macro", "micro"}, optional
         Averaging strategy for precision, recall, and F1. Default "macro".
     pos_label : int, str, or bool, optional
@@ -71,26 +72,38 @@ class StreamingMetrics:
         self.pos_label = pos_label
         self.zero_division = float(zero_division)
 
-        self.labels: Optional[List[Any]] = list(labels) if labels is not None else None
         self._labels_fixed = labels is not None
+        if self._labels_fixed:
+            assert labels is not None
+            lbl_list = list(labels)
+            if len(lbl_list) == 0:
+                raise ValueError("labels must not be empty if explicitly provided")
+            if len(set(lbl_list)) != len(lbl_list):
+                raise ValueError(f"Explicit labels must be unique, got {lbl_list}")
+            self.labels: Optional[List[Any]] = lbl_list
+            n_lbl = len(self.labels)
+            self.confusion_matrix_: Optional[np.ndarray] = np.zeros(
+                (n_lbl, n_lbl), dtype=np.int64
+            )
+        else:
+            self.labels = None
+            self.confusion_matrix_ = None
 
-        # Cumulative confusion matrix: shape (n_classes, n_classes)
-        self.confusion_matrix_: Optional[np.ndarray] = None
         self.n_samples_seen_: int = 0
         self.n_chunks_seen_: int = 0
 
-        # Accumulated true labels and predictions for AUC
-        self._all_y_true: List[np.ndarray] = []
-        self._all_y_pred: List[np.ndarray] = []
+        # Accumulated true labels and continuous scores for ROC AUC
+        self._all_y_true_auc: List[np.ndarray] = []
+        self._all_y_score_auc: List[np.ndarray] = []
 
     def _sync_labels(self, yt: np.ndarray, yp: np.ndarray) -> None:
+        """Handle label discovery when labels are not fixed."""
         unique_seen = np.unique(np.concatenate([yt, yp]))
         if self.labels is None:
             self.labels = sorted(unique_seen.tolist())
             n = len(self.labels)
             self.confusion_matrix_ = np.zeros((n, n), dtype=np.int64)
-        elif not self._labels_fixed:
-            # Check for new unseen labels
+        else:
             new_labels = [l for l in unique_seen if l not in self.labels]
             if new_labels:
                 old_labels = list(self.labels)
@@ -99,14 +112,18 @@ class StreamingMetrics:
                 assert old_cm is not None
                 n_new = len(self.labels)
                 new_cm = np.zeros((n_new, n_new), dtype=np.int64)
-                # Remap existing counts
                 old_idx = [self.labels.index(l) for l in old_labels]
                 for i_old, i_new in enumerate(old_idx):
                     for j_old, j_new in enumerate(old_idx):
                         new_cm[i_new, j_new] = old_cm[i_old, j_old]
                 self.confusion_matrix_ = new_cm
 
-    def update(self, y_true_chunk: Any, y_pred_chunk: Any) -> "StreamingMetrics":
+    def update(
+        self,
+        y_true_chunk: Any,
+        y_pred_chunk: Any,
+        y_score_chunk: Optional[Any] = None,
+    ) -> "StreamingMetrics":
         """Accumulate predictions and ground truth labels from a chunk.
 
         Parameters
@@ -114,7 +131,9 @@ class StreamingMetrics:
         y_true_chunk : array-like of shape (n_samples,)
             True class labels.
         y_pred_chunk : array-like of shape (n_samples,)
-            Predicted labels or scores.
+            Predicted discrete class labels.
+        y_score_chunk : array-like of shape (n_samples,) or None, optional
+            Continuous prediction scores or probabilities for the positive class (used for AUC).
 
         Returns
         -------
@@ -134,26 +153,57 @@ class StreamingMetrics:
         if len(yt) == 0:
             return self
 
-        self._sync_labels(yt, yp)
+        # If labels are fixed, check for unknown labels and raise
+        if self._labels_fixed:
+            assert self.labels is not None
+            known_set = set(self.labels)
+            for val in yt:
+                if val not in known_set:
+                    raise ValueError(
+                        f"Found unknown true label {str(val)!r} not in fixed labels: {self.labels}"
+                    )
+            for val in yp:
+                if val not in known_set:
+                    raise ValueError(
+                        f"Found unknown predicted label {str(val)!r} not in fixed labels: {self.labels}"
+                    )
+        else:
+            self._sync_labels(yt, yp)
+
         assert self.labels is not None
         assert self.confusion_matrix_ is not None
 
-        # Build chunk confusion matrix using label index mapping
-        label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
-        for t, p in zip(yt, yp):
-            if t in label_to_idx and p in label_to_idx:
-                self.confusion_matrix_[label_to_idx[t], label_to_idx[p]] += 1
+        # Vectorised confusion matrix accumulation using np.bincount
+        n_classes = len(self.labels)
+        label_to_idx = {lbl: i for i, lbl in enumerate(self.labels)}
+        t_indices = np.array([label_to_idx[v] for v in yt], dtype=np.int64)
+        p_indices = np.array([label_to_idx[v] for v in yp], dtype=np.int64)
+
+        flat_indices = t_indices * n_classes + p_indices
+        chunk_cm = np.bincount(flat_indices, minlength=n_classes * n_classes).reshape(
+            n_classes, n_classes
+        )
+        self.confusion_matrix_ += chunk_cm
 
         self.n_samples_seen_ += len(yt)
         self.n_chunks_seen_ += 1
-        self._all_y_true.append(yt.copy())
-        self._all_y_pred.append(yp.copy())
+
+        # Continuous scores for AUC
+        if y_score_chunk is not None:
+            ys = np.asarray(y_score_chunk, dtype=float)
+            if ys.ndim != 1 or len(ys) != len(yt):
+                raise ValueError("y_score must be a 1-D array matching y_true length")
+            if not np.all(np.isfinite(ys)):
+                raise ValueError("y_score must contain finite numeric values")
+            self._all_y_true_auc.append(yt.copy())
+            self._all_y_score_auc.append(ys.copy())
+
         return self
 
     def compute_accuracy(self) -> float:
         """Calculate cumulative accuracy."""
         if self.confusion_matrix_ is None or self.n_samples_seen_ == 0:
-            return 0.0
+            return float(self.zero_division)
         correct = float(np.trace(self.confusion_matrix_))
         return _safe_div(correct, self.n_samples_seen_, self.zero_division)
 
@@ -207,11 +257,12 @@ class StreamingMetrics:
         return self.zero_division, self.zero_division, self.zero_division
 
     def compute_auc(self) -> Optional[float]:
-        """Compute cumulative ROC AUC if binary targets are observed."""
-        if not self._all_y_true:
+        """Compute cumulative ROC AUC from continuous prediction scores."""
+        if not self._all_y_score_auc or not self._all_y_true_auc:
             return None
-        y_true_all = np.concatenate(self._all_y_true)
-        y_pred_all = np.concatenate(self._all_y_pred)
+
+        y_true_all = np.concatenate(self._all_y_true_auc)
+        y_score_all = np.concatenate(self._all_y_score_auc)
 
         unique_true = np.unique(y_true_all)
         if len(unique_true) != 2:
@@ -219,7 +270,7 @@ class StreamingMetrics:
 
         # Binary ROC AUC score
         try:
-            return float(roc_auc_score(y_true_all, y_pred_all))
+            return float(roc_auc_score(y_true_all, y_score_all))
         except Exception:
             return None
 
@@ -243,13 +294,18 @@ class StreamingMetrics:
 
     def reset(self) -> "StreamingMetrics":
         """Reset internal accumulator state."""
-        self.confusion_matrix_ = None
+        if self._labels_fixed:
+            assert self.labels is not None
+            n = len(self.labels)
+            self.confusion_matrix_ = np.zeros((n, n), dtype=np.int64)
+        else:
+            self.labels = None
+            self.confusion_matrix_ = None
+
         self.n_samples_seen_ = 0
         self.n_chunks_seen_ = 0
-        self._all_y_true.clear()
-        self._all_y_pred.clear()
-        if not self._labels_fixed:
-            self.labels = None
+        self._all_y_true_auc.clear()
+        self._all_y_score_auc.clear()
         return self
 
 
@@ -265,13 +321,13 @@ class RollingMetrics:
     """
 
     def __init__(self, window_size: int = 500, zero_division: float = 0.0) -> None:
-        if window_size < 1:
-            raise ValueError(f"window_size must be >= 1, got {window_size}")
-        self.window_size = window_size
+        if isinstance(window_size, bool) or not isinstance(window_size, (int, np.integer)) or window_size < 1:
+            raise ValueError(f"window_size must be an int >= 1, got {window_size!r}")
+        self.window_size = int(window_size)
         self.zero_division = float(zero_division)
 
-        self._y_true_window: deque = deque(maxlen=window_size)
-        self._y_pred_window: deque = deque(maxlen=window_size)
+        self._y_true_window: deque = deque(maxlen=self.window_size)
+        self._y_pred_window: deque = deque(maxlen=self.window_size)
 
     def update(self, y_true_chunk: Any, y_pred_chunk: Any) -> "RollingMetrics":
         """Push a chunk of observations into the rolling window.

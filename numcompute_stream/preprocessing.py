@@ -43,6 +43,10 @@ class StandardScaler:
     """
 
     def __init__(self, with_mean: bool = True, with_std: bool = True) -> None:
+        if not isinstance(with_mean, bool):
+            raise TypeError(f"with_mean must be a bool, got {type(with_mean).__name__}")
+        if not isinstance(with_std, bool):
+            raise TypeError(f"with_std must be a bool, got {type(with_std).__name__}")
         self.with_mean = with_mean
         self.with_std = with_std
 
@@ -119,14 +123,13 @@ class StandardScaler:
         self.mean_ = np.where(self._n > 0, self._mean, 0.0)
         self.var_ = np.where(self._n > 0, self._m2 / np.maximum(self._n, 1.0), 0.0)
 
-        scale = np.sqrt(self.var_)
-        # Constant columns (std == 0) get scale_ = 1.0 to avoid zero-division
-        scale = np.where(scale < 1e-12, 1.0, scale)
-        self.scale_ = scale
+        # Constant columns (var == 0.0 or below machine precision) receive scale_ = 1.0
+        eps = np.finfo(float).eps
+        self.scale_ = np.where(self.var_ <= eps, 1.0, np.sqrt(np.maximum(self.var_, 0.0)))
         return self
 
     def fit(self, X: Any, y=None) -> "StandardScaler":
-        """Fit StandardScaler on batch X.
+        """Fit StandardScaler on batch X (resets accumulator state).
 
         Parameters
         ----------
@@ -140,6 +143,12 @@ class StandardScaler:
         """
         self.n_features_in_ = None
         self.n_samples_seen_ = 0
+        self._n = np.zeros(0, dtype=float)
+        self._mean = np.zeros(0, dtype=float)
+        self._m2 = np.zeros(0, dtype=float)
+        self.mean_ = None
+        self.var_ = None
+        self.scale_ = None
         return self.partial_fit(X, y)
 
     def transform(self, X: Any) -> np.ndarray:
@@ -201,6 +210,8 @@ class Imputer:
     def __init__(self, strategy: str = "mean", fill_value: float = 0.0) -> None:
         if strategy not in ("mean", "constant"):
             raise ValueError(f"strategy must be 'mean' or 'constant', got {strategy!r}")
+        if not np.isfinite(fill_value):
+            raise ValueError(f"fill_value must be finite, got {fill_value!r}")
         self.strategy = strategy
         self.fill_value = float(fill_value)
 
@@ -249,7 +260,6 @@ class Imputer:
             valid = ~np.isnan(arr)
             self._counts += valid.sum(axis=0)
             self._sums += np.where(valid, arr, 0.0).sum(axis=0)
-            # If a column has no non-NaN samples, fall back to fill_value
             stats = np.where(
                 self._counts > 0,
                 self._sums / np.maximum(self._counts, 1.0),
@@ -262,7 +272,7 @@ class Imputer:
         return self
 
     def fit(self, X: Any, y=None) -> "Imputer":
-        """Fit Imputer on batch X.
+        """Fit Imputer on batch X (resets internal statistics).
 
         Parameters
         ----------
@@ -275,6 +285,9 @@ class Imputer:
         self : Imputer
         """
         self.n_features_in_ = None
+        self.statistics_ = None
+        self._counts = np.zeros(0, dtype=float)
+        self._sums = np.zeros(0, dtype=float)
         return self.partial_fit(X, y)
 
     def transform(self, X: Any) -> np.ndarray:
@@ -303,7 +316,6 @@ class Imputer:
         out = arr.copy()
         nan_mask = np.isnan(out)
         if nan_mask.any():
-            # Broadcast replacement along axis 0
             out = np.where(nan_mask, self.statistics_, out)
         return out
 
@@ -383,7 +395,6 @@ class OneHotEncoder:
                     f"{self.n_features_in_} features"
                 )
             assert self.categories_ is not None
-            # Update categories for each column
             for col_idx in range(n_cols):
                 existing = self.categories_[col_idx]
                 incoming = np.unique(arr[:, col_idx])
@@ -393,7 +404,7 @@ class OneHotEncoder:
         return self
 
     def fit(self, X: Any, y=None) -> "OneHotEncoder":
-        """Fit OneHotEncoder on batch X.
+        """Fit OneHotEncoder on batch X (resets categories).
 
         Parameters
         ----------
@@ -444,8 +455,6 @@ class OneHotEncoder:
             block = np.zeros((n_samples, n_cats), dtype=float)
             col_vals = arr[:, col_idx]
 
-            # Map values to category indices
-            # Handle unknown categories
             for cat_idx, cat_val in enumerate(cats):
                 matches = (col_vals == cat_val)
                 block[matches, cat_idx] = 1.0

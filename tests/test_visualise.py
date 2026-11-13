@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 
 from numcompute_stream.visualise import (
@@ -17,8 +18,9 @@ def close_plots():
     plt.close("all")
 
 
-def test_plot_metric_over_time(tmp_path):
-    metric_values = [0.6, 0.7, 0.65, 0.8, 0.85]
+def test_plot_metric_over_time_with_warmup_none(tmp_path):
+    # First chunk is None (warmup)
+    metric_values = [None, 0.7, 0.65, 0.8, 0.85]
     retrain_points = [1, 3]
 
     fig, ax = plot_metric_over_time(
@@ -32,7 +34,6 @@ def test_plot_metric_over_time(tmp_path):
     assert ax.get_ylabel() == "Accuracy"
     assert ax.get_title() == "Accuracy Over Time"
 
-    # Save to file test
     out_file = tmp_path / "metric.png"
     fig, _ = plot_metric_over_time(metric_values, save_path=str(out_file))
     assert out_file.is_file()
@@ -58,9 +59,9 @@ def test_compare_models(tmp_path):
     assert out_file.is_file()
 
 
-def test_plot_predictions_vs_ground_truth(tmp_path):
-    y_true = [0, 1, 0, 1, 1, 0]
-    y_pred = [0, 1, 1, 1, 0, 0]  # two misclassifications
+def test_plot_predictions_vs_ground_truth_categorical(tmp_path):
+    y_true = ["cat", "dog", "cat", "dog", "dog", "cat"]
+    y_pred = ["cat", "dog", "dog", "dog", "cat", "cat"]  # two misclassifications
 
     fig, ax = plot_predictions_vs_ground_truth(
         y_true,
@@ -77,11 +78,17 @@ def test_plot_predictions_vs_ground_truth(tmp_path):
 
 
 def test_visualise_validation_errors():
-    with pytest.raises(ValueError, match="empty"):
-        plot_metric_over_time([])
+    with pytest.raises(ValueError, match="at least one valid"):
+        plot_metric_over_time([None, None])
 
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(ValueError, match="must not be empty"):
         compare_models([], [1.0])
+
+    with pytest.raises(ValueError, match="two strings"):
+        compare_models([1.0], [2.0], labels=("single",))
 
     with pytest.raises(ValueError, match="Lengths must match"):
         plot_predictions_vs_ground_truth([0, 1], [0])
+
+    with pytest.raises(ValueError, match="1-D arrays"):
+        plot_predictions_vs_ground_truth([[0]], [[0]])

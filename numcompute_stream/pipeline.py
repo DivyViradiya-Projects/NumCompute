@@ -1,10 +1,12 @@
 """Streaming Pipeline.
 
 Chains transformers with a final estimator, orchestrating incremental updates
-and managing a raw-feature buffer to ensure consistent feature coordinates upon retraining.
+and managing a raw-feature buffer with transformer snapshots to ensure 100%
+consistent feature coordinates during both inference and retraining.
 """
 from __future__ import annotations
 
+import copy
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
@@ -14,11 +16,15 @@ __all__ = ["Pipeline"]
 
 
 class Pipeline:
-    """Streaming Pipeline with raw-pending buffer management.
+    """Streaming Pipeline with raw-pending buffer and committed transformer snapshots.
 
-    Ensures that when a decision tree is retrained across streaming chunks, all
-    buffered samples are transformed using a unified, up-to-date transformer state
-    rather than mixing samples transformed under stale historical parameters.
+    Solves feature coordinate drift by maintaining a committed transformer snapshot
+    paired with the fitted estimator. Incoming chunks update candidate transformers
+    and accumulate raw samples. When the buffer reaches ``buffer_size``, all buffered
+    samples are transformed under the up-to-date candidate transformers, the estimator
+    is retrained, and the new transformer state is atomically committed. Inference
+    between retrains uses the committed snapshot, guaranteeing that feature
+    transformations always match the coordinate system in which the tree was trained.
 
     Parameters
     ----------
@@ -53,11 +59,14 @@ class Pipeline:
         # Resolve buffer size
         final_est = self.steps[-1][1]
         if buffer_size is not None:
-            if buffer_size < 1:
-                raise ValueError(f"buffer_size must be >= 1, got {buffer_size}")
-            self.buffer_size = buffer_size
+            if isinstance(buffer_size, bool) or not isinstance(buffer_size, (int, np.integer)) or buffer_size < 1:
+                raise ValueError(f"buffer_size must be an integer >= 1, got {buffer_size!r}")
+            self.buffer_size = int(buffer_size)
         elif hasattr(final_est, "buffer_size"):
-            self.buffer_size = getattr(final_est, "buffer_size")
+            est_bs = getattr(final_est, "buffer_size")
+            if isinstance(est_bs, bool) or not isinstance(est_bs, (int, np.integer)) or est_bs < 1:
+                raise ValueError(f"Inherited buffer_size must be an integer >= 1, got {est_bs!r}")
+            self.buffer_size = int(est_bs)
         else:
             self.buffer_size = 500
 
@@ -65,6 +74,9 @@ class Pipeline:
         self._raw_X_buffer: List[np.ndarray] = []
         self._raw_y_buffer: List[np.ndarray] = []
         self._pending_count: int = 0
+
+        # Committed snapshot of intermediate transformers matching the fitted estimator
+        self._committed_transformers: Optional[List[Tuple[str, Any]]] = None
 
         # State tracking
         self.is_fitted_: bool = False
@@ -82,6 +94,8 @@ class Pipeline:
                     f"Each step must be a (name, object) tuple, got {item!r} at index {idx}"
                 )
             name, step = item
+            if len(name.strip()) == 0:
+                raise ValueError(f"Step name at index {idx} must be non-empty")
             names.append(name)
 
             is_last = idx == len(self.steps) - 1
@@ -111,10 +125,10 @@ class Pipeline:
         """Current number of pending samples in the raw buffer."""
         return self._pending_count
 
-    def _transform_through_transformers(self, X: Any) -> np.ndarray:
-        """Transform X sequentially through all intermediate transformers."""
+    def _transform_steps(self, transformer_steps: List[Tuple[str, Any]], X: Any) -> np.ndarray:
+        """Transform X sequentially through a specific set of transformers."""
         curr_X = X
-        for name, transformer in self.steps[:-1]:
+        for name, transformer in transformer_steps:
             curr_X = transformer.transform(curr_X)
         return curr_X
 
@@ -145,6 +159,8 @@ class Pipeline:
         final_est = self.steps[-1][1]
         final_est.fit(curr_X, y)
 
+        # Snapshot intermediate transformers
+        self._committed_transformers = copy.deepcopy(self.steps[:-1])
         self._raw_X_buffer.clear()
         self._raw_y_buffer.clear()
         self._pending_count = 0
@@ -155,10 +171,11 @@ class Pipeline:
     def partial_fit(self, X_chunk: Any, y_chunk: Any) -> "Pipeline":
         """Process an incoming streaming chunk.
 
-        Updates transformer statistics incrementally and stores the raw incoming
-        samples in the pipeline's raw buffer. When the buffer reaches ``buffer_size``,
-        the entire raw buffer is transformed using the unified current transformer
-        state and used to retrain the final estimator via ``fit``.
+        Updates candidate transformer statistics incrementally and stores the raw
+        incoming samples in the pipeline's raw buffer. When the buffer reaches
+        ``buffer_size``, the entire raw buffer is transformed using the unified
+        candidate transformer state, used to retrain the final estimator via ``fit``,
+        and atomically committed.
 
         Parameters
         ----------
@@ -182,7 +199,7 @@ class Pipeline:
                 f"X_chunk length ({len(raw_X)}) and y_chunk length ({len(raw_y)}) must match"
             )
 
-        # Update intermediate transformers chunk-by-chunk
+        # Update candidate intermediate transformers chunk-by-chunk
         curr_X = raw_X
         for name, transformer in self.steps[:-1]:
             if hasattr(transformer, "partial_fit"):
@@ -190,7 +207,6 @@ class Pipeline:
             elif hasattr(transformer, "fit") and not getattr(transformer, "is_fitted_", False):
                 transformer.fit(curr_X)
 
-            # Transform for feeding into subsequent transformers
             curr_X = transformer.transform(curr_X)
 
         # Retain raw chunks in pending buffer
@@ -207,21 +223,22 @@ class Pipeline:
         return self
 
     def _retrain_estimator(self) -> None:
-        """Transform complete raw pending window under latest transformer state and fit estimator."""
+        """Transform complete raw pending window under latest candidate transformers and fit estimator."""
         if self._pending_count == 0:
             return
 
         X_raw_all = np.vstack(self._raw_X_buffer)
         y_raw_all = np.concatenate(self._raw_y_buffer)
 
-        # Transform entire training window in unified current coordinate space
-        X_trans = self._transform_through_transformers(X_raw_all)
+        # Transform entire training window in unified current candidate space
+        X_trans = self._transform_steps(self.steps[:-1], X_raw_all)
 
         final_est = self.steps[-1][1]
         # Train estimator on the fully transformed raw window
         final_est.fit(X_trans, y_raw_all)
 
-        # Succeeded: commit state and clear pipeline raw buffer
+        # Succeeded: atomically commit transformer snapshot and clear raw buffer
+        self._committed_transformers = copy.deepcopy(self.steps[:-1])
         self.is_fitted_ = True
         self.n_retrains_ += 1
         self._raw_X_buffer.clear()
@@ -235,7 +252,7 @@ class Pipeline:
         return self
 
     def predict(self, X: Any) -> np.ndarray:
-        """Transform X sequentially and predict with the final estimator.
+        """Transform X using the committed transformer snapshot and predict with the final estimator.
 
         Parameters
         ----------
@@ -247,15 +264,15 @@ class Pipeline:
         y_pred : ndarray
             Predicted class labels.
         """
-        if not self.is_fitted_:
+        if not self.is_fitted_ or self._committed_transformers is None:
             raise NotFittedError("This Pipeline instance is not fitted yet.")
 
-        X_trans = self._transform_through_transformers(X)
+        X_trans = self._transform_steps(self._committed_transformers, X)
         final_est = self.steps[-1][1]
         return final_est.predict(X_trans)
 
     def predict_proba(self, X: Any) -> np.ndarray:
-        """Transform X and return class probabilities from the final estimator.
+        """Transform X using the committed transformer snapshot and return class probabilities.
 
         Parameters
         ----------
@@ -267,10 +284,10 @@ class Pipeline:
         proba : ndarray
             Predicted probabilities.
         """
-        if not self.is_fitted_:
+        if not self.is_fitted_ or self._committed_transformers is None:
             raise NotFittedError("This Pipeline instance is not fitted yet.")
 
-        X_trans = self._transform_through_transformers(X)
+        X_trans = self._transform_steps(self._committed_transformers, X)
         final_est = self.steps[-1][1]
         if hasattr(final_est, "predict_proba"):
             return final_est.predict_proba(X_trans)
@@ -278,8 +295,10 @@ class Pipeline:
 
     def score(self, X: Any, y: Any) -> float:
         """Return mean prediction accuracy on test data (X, y)."""
-        y_pred = self.predict(X)
         y_arr = np.asarray(y)
+        if y_arr.ndim != 1:
+            raise ValueError(f"y must be 1-D, got shape {y_arr.shape}")
+        y_pred = self.predict(X)
         if len(y_arr) != len(y_pred):
-            raise ValueError(f"Lengths do not match: {len(y_arr)} vs {len(y_pred)}")
+            raise ValueError(f"Lengths do not match: len(y)={len(y_arr)} vs len(y_pred)={len(y_pred)}")
         return float(np.mean(y_pred == y_arr))
