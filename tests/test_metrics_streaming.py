@@ -153,3 +153,4 @@ def test_rolling_metrics_reset():
     rm.reset()
     assert rm.result()["window_samples"] == 0
     assert rm.result()["accuracy"] == 0.0
+

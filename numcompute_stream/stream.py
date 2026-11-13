@@ -1,17 +1,47 @@
 """Stream Trainer and Chunk Coordinator.
 
-Coordinates chunk-wise training, prequential evaluation, and detailed logging.
+Coordinates chunk-wise training, prequential evaluation (test-then-train),
+timing instrumentation, memory estimation, and per-chunk structured logging.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import sys
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 __all__ = ["StreamTrainer"]
 
 
+def _estimate_memory(obj: Any) -> int:
+    """Compute approximate memory usage of an estimator or pipeline in bytes."""
+    total_bytes = sys.getsizeof(obj)
+    # Check for buffers in tree or pipeline
+    for attr in ("_X_buffer", "_y_buffer", "_raw_X_buffer", "_raw_y_buffer"):
+        buf = getattr(obj, attr, None)
+        if isinstance(buf, list):
+            total_bytes += sys.getsizeof(buf)
+            for item in buf:
+                if isinstance(item, np.ndarray):
+                    total_bytes += item.nbytes
+    # Check steps if pipeline
+    steps = getattr(obj, "steps", None)
+    if isinstance(steps, list):
+        for name, step in steps:
+            total_bytes += sys.getsizeof(step)
+            for sub_attr in ("mean_", "var_", "scale_", "statistics_"):
+                val = getattr(step, sub_attr, None)
+                if isinstance(val, np.ndarray):
+                    total_bytes += val.nbytes
+    return int(total_bytes)
+
+
 class StreamTrainer:
     """Coordinates streaming workflow with prequential evaluation and logs.
+
+    Implements a strict prequential protocol (test-then-train): each incoming chunk
+    is evaluated against the currently fitted model *before* passing it to ``partial_fit``.
+    Records per-chunk metrics, timing, retrain events, and approximate memory footprint.
 
     Parameters
     ----------
@@ -27,15 +57,103 @@ class StreamTrainer:
         self._cumulative_correct: int = 0
         self._cumulative_evaluated: int = 0
 
-    def fit_chunk(self, X_chunk, y_chunk) -> Dict[str, Any]:
-        """Update model with an incoming training chunk."""
-        raise NotImplementedError("Will be implemented in Phase 5")
+    def score_chunk(self, X_chunk: Any, y_chunk: Any) -> Optional[float]:
+        """Evaluate the current model on incoming chunk before training (prequential).
 
-    def score_chunk(self, X_chunk, y_chunk) -> float:
-        """Evaluate current model on incoming chunk before training (prequential)."""
-        raise NotImplementedError("Will be implemented in Phase 5")
+        Parameters
+        ----------
+        X_chunk : array-like
+            Incoming feature samples.
+        y_chunk : array-like
+            Incoming ground truth labels.
+
+        Returns
+        -------
+        accuracy : float or None
+            Chunk accuracy in [0.0, 1.0], or None if the model is not fitted yet.
+        """
+        is_fitted = getattr(self.model, "is_fitted_", False)
+        if not is_fitted:
+            return None
+
+        X_arr = np.asarray(X_chunk)
+        y_arr = np.asarray(y_chunk)
+        if len(X_arr) == 0:
+            return None
+
+        y_pred = self.model.predict(X_arr)
+        correct = int(np.sum(y_pred == y_arr))
+        self._cumulative_correct += correct
+        self._cumulative_evaluated += len(y_arr)
+        return float(correct / len(y_arr))
+
+    def fit_chunk(self, X_chunk: Any, y_chunk: Any) -> Dict[str, Any]:
+        """Update model with an incoming training chunk.
+
+        Parameters
+        ----------
+        X_chunk : array-like
+            Incoming feature chunk.
+        y_chunk : array-like
+            Incoming target labels.
+
+        Returns
+        -------
+        log_entry : dict
+            Metrics, timings, and retraining status for this chunk.
+        """
+        X_arr = np.asarray(X_chunk)
+        y_arr = np.asarray(y_chunk)
+        n_samples = len(X_arr)
+
+        retrains_before = getattr(self.model, "n_retrains_", 0)
+
+        # 1. Prequential evaluation (test-then-train)
+        score_start = time.perf_counter()
+        chunk_acc = self.score_chunk(X_arr, y_arr)
+        score_time = time.perf_counter() - score_start
+
+        # 2. Incremental model update
+        fit_start = time.perf_counter()
+        self.model.partial_fit(X_arr, y_arr)
+        fit_time = time.perf_counter() - fit_start
+
+        retrains_after = getattr(self.model, "n_retrains_", 0)
+        retrained = retrains_after > retrains_before
+
+        self.n_samples_seen_ += n_samples
+
+        # Cumulative prequential accuracy
+        if self._cumulative_evaluated > 0:
+            cum_acc: Optional[float] = float(self._cumulative_correct / self._cumulative_evaluated)
+            cum_err: Optional[float] = float(1.0 - cum_acc)
+        else:
+            cum_acc = None
+            cum_err = None
+
+        log_entry: Dict[str, Any] = {
+            "chunk_index": self.chunk_index_,
+            "n_samples": n_samples,
+            "cumulative_samples": self.n_samples_seen_,
+            "retrained": retrained,
+            "retrain_count": retrains_after,
+            "fit_time": float(fit_time),
+            "score_time": float(score_time),
+            "chunk_accuracy": chunk_acc,
+            "cumulative_accuracy": cum_acc,
+            "cumulative_error": cum_err,
+            "n_buffered_samples": getattr(self.model, "n_buffered_samples_", 0),
+            "memory_bytes": _estimate_memory(self.model),
+        }
+
+        self.logs_.append(log_entry)
+        self.chunk_index_ += 1
+        return log_entry
+
+    def step(self, X_chunk: Any, y_chunk: Any) -> Dict[str, Any]:
+        """Alias for fit_chunk."""
+        return self.fit_chunk(X_chunk, y_chunk)
 
     def get_logs(self) -> List[Dict[str, Any]]:
-        """Return history of chunk logs."""
+        """Return full history of structured chunk logs."""
         return list(self.logs_)
-

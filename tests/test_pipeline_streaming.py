@@ -155,3 +155,4 @@ def test_pipeline_flush():
     assert pipe.n_retrains_ == 1
     assert pipe.predict([[0.5]])[0] == 0
     assert pipe.predict([[10.5]])[0] == 1
+
