@@ -34,6 +34,9 @@ from numcompute_stream.tree import (
 )
 
 
+GAIN_TOLERANCE: float = 1e-12
+
+
 def _naive_loop_split_evaluation(
     x_col: np.ndarray, y: np.ndarray, n_classes: int, criterion: str = "gini"
 ) -> Tuple[float, Optional[float], int]:
@@ -78,6 +81,7 @@ def benchmark_split_evaluation(
     n_warmup: int = 2,
     n_repeats: int = 10,
     random_state: int = 42,
+    gain_tolerance: float = GAIN_TOLERANCE,
 ) -> List[Dict[str, Any]]:
     """Benchmark loop-based split search vs vectorised split search with verification and median timings."""
     rng = np.random.RandomState(random_state)
@@ -90,35 +94,67 @@ def benchmark_split_evaluation(
         parent_counts = np.bincount(y, minlength=n_classes)
         parent_imp = _compute_impurity(parent_counts, n, "gini")
 
-        # 1. Warm-up iterations (unrecorded)
-        for _ in range(n_warmup):
-            _naive_loop_split_evaluation(x_col, y, n_classes, "gini")
-            _evaluate_feature_splits(x_col, y, n_classes, "gini", parent_imp)
+        # 1. Warm-up iterations (unrecorded, alternating order)
+        for w in range(n_warmup):
+            if w % 2 == 0:
+                _naive_loop_split_evaluation(x_col, y, n_classes, "gini")
+                _evaluate_feature_splits(x_col, y, n_classes, "gini", parent_imp)
+            else:
+                _evaluate_feature_splits(x_col, y, n_classes, "gini", parent_imp)
+                _naive_loop_split_evaluation(x_col, y, n_classes, "gini")
 
-        # 2. Naive loop benchmark timings
+        # 2. Benchmark timings with alternating execution order across repetitions
         loop_times: List[float] = []
-        for _ in range(n_repeats):
-            t0 = time.perf_counter()
-            lgain, lthresh, _ = _naive_loop_split_evaluation(x_col, y, n_classes, "gini")
-            loop_times.append(time.perf_counter() - t0)
-
-        # 3. Vectorised benchmark timings
         vec_times: List[float] = []
-        for _ in range(n_repeats):
-            t0 = time.perf_counter()
-            vgain, vthresh = _evaluate_feature_splits(x_col, y, n_classes, "gini", parent_imp)
-            vec_times.append(time.perf_counter() - t0)
+        lgain, lthresh = 0.0, None
+        vgain, vthresh = 0.0, None
 
-        # 4. Correctness & partition verification
+        for rep in range(n_repeats):
+            if rep % 2 == 0:
+                # Even repetition: naive first, then vectorized
+                t0 = time.perf_counter()
+                lgain, lthresh, _ = _naive_loop_split_evaluation(x_col, y, n_classes, "gini")
+                loop_times.append(time.perf_counter() - t0)
+
+                t0 = time.perf_counter()
+                vgain, vthresh = _evaluate_feature_splits(x_col, y, n_classes, "gini", parent_imp)
+                vec_times.append(time.perf_counter() - t0)
+            else:
+                # Odd repetition: vectorized first, then naive
+                t0 = time.perf_counter()
+                vgain, vthresh = _evaluate_feature_splits(x_col, y, n_classes, "gini", parent_imp)
+                vec_times.append(time.perf_counter() - t0)
+
+                t0 = time.perf_counter()
+                lgain, lthresh, _ = _naive_loop_split_evaluation(x_col, y, n_classes, "gini")
+                loop_times.append(time.perf_counter() - t0)
+
+        # 3. Correctness & partition verification
         diff_gain = float(abs(lgain - vgain))
         if lthresh is not None and vthresh is not None:
-            diff_thresh = float(abs(lthresh - vthresh))
-            partition_naive = x_col <= lthresh
-            partition_vec = x_col <= vthresh
+            diff_thresh: Optional[float] = float(abs(lthresh - vthresh))
+            partition_naive = (x_col <= lthresh)
+            partition_vec = (x_col <= vthresh)
             partition_match = bool(np.array_equal(partition_naive, partition_vec))
-        else:
+        elif lthresh is None and vthresh is None:
             diff_thresh = 0.0
-            partition_match = (lthresh is None and vthresh is None)
+            partition_match = True
+        else:
+            diff_thresh = None
+            partition_match = False
+
+        # 4. Strict enforcement of split correctness
+        if diff_gain > gain_tolerance:
+            raise RuntimeError(
+                f"Split correctness failure for N={n}: gain difference {diff_gain:.2e} "
+                f"exceeds tolerance {gain_tolerance:.2e} (naive={lgain:.8f}, vectorized={vgain:.8f})"
+            )
+        if not partition_match:
+            raise RuntimeError(
+                f"Split correctness failure for N={n}: partition mismatch. "
+                f"Naive threshold={lthresh}, Vectorized threshold={vthresh}, "
+                f"Threshold difference={diff_thresh}"
+            )
 
         median_loop = float(np.median(loop_times))
         mean_loop = float(np.mean(loop_times))
@@ -227,6 +263,7 @@ def run_and_save_benchmarks(output_dir: str = "benchmark/results") -> None:
             "python_version": sys.version.split()[0],
             "numpy_version": np.__version__,
             "platform": sys.platform,
+            "split_gain_tolerance": GAIN_TOLERANCE,
             "dataset_note": "Synthetic streaming classification with fixed decision boundaries (no concept drift).",
             "memory_note": "Memory values represent estimated structural model and buffer footprint, not process peak RSS.",
         },
@@ -312,9 +349,10 @@ def run_and_save_benchmarks(output_dir: str = "benchmark/results") -> None:
     ]
     for r in split_res:
         match_str = "Yes (Exact)" if r["partition_match"] else "No"
+        thresh_str = f"{r['threshold_difference']:.2e}" if r["threshold_difference"] is not None else "None"
         md_content.append(
             f"| {r['n_samples']} | {r['median_loop_time_sec']*1000:.3f} | {r['median_vectorized_time_sec']*1000:.3f} | "
-            f"**{r['speedup_median']:.1f}x** | {r['gain_difference']:.2e} | {r['threshold_difference']:.2e} | {match_str} |"
+            f"**{r['speedup_median']:.1f}x** | {r['gain_difference']:.2e} | {thresh_str} | {match_str} |"
         )
 
     md_content.extend([
