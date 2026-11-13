@@ -120,3 +120,4 @@ def test_update_stats_functional():
     s = update_stats(s, c2)
     assert s.count[0] == 4.0
     assert s.mean[0] == 2.5
+

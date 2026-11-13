@@ -186,3 +186,4 @@ def test_onehot_encoder_multidimensional():
     # Total encoded shape: (2, 4)
     encoded = encoder.transform(X)
     assert encoded.shape == (2, 4)
+
