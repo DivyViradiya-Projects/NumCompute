@@ -7,13 +7,13 @@ name = "numcompute"
 version = "0.1.0"
 description = "Modular scientific computing toolkit using plain Python and NumPy"
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "matplotlib>=3.5"]
 
 [project.optional-dependencies]
 dev = ["pytest", "jupyter"]
 
 [tool.setuptools.packages.find]
-include = ["numcompute*"]
+include = ["numcompute*", "numcompute_stream*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
