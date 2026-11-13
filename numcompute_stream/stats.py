@@ -64,18 +64,60 @@ class StreamingStats:
         # Buffer for exact quantile calculation
         self._sample_buffer: List[np.ndarray] = []
 
-        # Streaming histogram accumulator state
+        # Streaming histogram configuration and validation
         self._hist_range = hist_range
+        if hist_range is not None:
+            if not isinstance(hist_range, (tuple, list)) or len(hist_range) != 2:
+                raise ValueError(
+                    f"hist_range must be a tuple of two finite values (min, max), got {hist_range!r}"
+                )
+            r_min, r_max = hist_range[0], hist_range[1]
+            if isinstance(r_min, bool) or isinstance(r_max, bool) or not (
+                isinstance(r_min, (int, float, np.floating, np.integer))
+                and isinstance(r_max, (int, float, np.floating, np.integer))
+            ):
+                raise TypeError("hist_range boundaries must be numeric")
+            r_min, r_max = float(r_min), float(r_max)
+            if not (np.isfinite(r_min) and np.isfinite(r_max)):
+                raise ValueError(f"hist_range values must be finite, got ({r_min}, {r_max})")
+            if r_min >= r_max:
+                raise ValueError(
+                    f"hist_range lower boundary must be strictly less than upper boundary, got ({r_min}, {r_max})"
+                )
+            self._hist_range = (r_min, r_max)
+
+        self._hist_bins_int: Optional[int] = None
+        self._initial_bin_edges: Optional[np.ndarray] = None
         self._bin_edges: Optional[np.ndarray] = None
         self._hist_counts: Optional[np.ndarray] = None
 
-        if hist_bins is not None and hist_range is not None:
+        if hist_bins is not None:
+            if isinstance(hist_bins, bool):
+                raise TypeError(f"hist_bins cannot be a boolean, got {hist_bins!r}")
             if isinstance(hist_bins, (int, np.integer)):
-                self._bin_edges = np.linspace(hist_range[0], hist_range[1], hist_bins + 1)
-                self._hist_counts = np.zeros(hist_bins, dtype=np.int64)
+                if hist_bins <= 0:
+                    raise ValueError(f"hist_bins integer count must be positive, got {hist_bins!r}")
+                if self._hist_range is not None:
+                    edges = np.linspace(self._hist_range[0], self._hist_range[1], int(hist_bins) + 1)
+                    self._initial_bin_edges = edges.copy()
+                    self._bin_edges = edges
+                    self._hist_counts = np.zeros(int(hist_bins), dtype=np.int64)
+                else:
+                    self._hist_bins_int = int(hist_bins)
             else:
-                self._bin_edges = np.asarray(hist_bins, dtype=float)
-                self._hist_counts = np.zeros(len(self._bin_edges) - 1, dtype=np.int64)
+                try:
+                    edges = np.asarray(hist_bins, dtype=float)
+                except (ValueError, TypeError) as exc:
+                    raise TypeError("Explicit hist_bins edges must be numeric") from exc
+                if edges.ndim != 1 or len(edges) < 2:
+                    raise ValueError("Explicit hist_bins edges must be a 1-D sequence with length >= 2")
+                if not np.all(np.isfinite(edges)):
+                    raise ValueError("Explicit hist_bins edges must contain finite numeric values")
+                if not np.all(np.diff(edges) > 0):
+                    raise ValueError("Explicit hist_bins edges must be strictly increasing without duplicates")
+                self._initial_bin_edges = edges.copy()
+                self._bin_edges = edges
+                self._hist_counts = np.zeros(len(edges) - 1, dtype=np.int64)
 
     def _init(self, n_features: int) -> None:
         self.n_features_ = n_features
@@ -133,6 +175,17 @@ class StreamingStats:
         # Genuinely incremental histogram count updates
         flat_vals = arr[valid]
         if flat_vals.size > 0:
+            if self._bin_edges is None and self._hist_bins_int is not None:
+                # Initialize range from first observed non-empty, non-NaN chunk
+                min_v = float(np.min(flat_vals))
+                max_v = float(np.max(flat_vals))
+                if min_v == max_v:
+                    min_v -= 0.5
+                    max_v += 0.5
+                edges = np.linspace(min_v, max_v, self._hist_bins_int + 1)
+                self._bin_edges = edges
+                self._hist_counts = np.zeros(self._hist_bins_int, dtype=np.int64)
+
             if self._bin_edges is not None and self._hist_counts is not None:
                 counts, _ = np.histogram(flat_vals, bins=self._bin_edges)
                 self._hist_counts += counts
@@ -257,8 +310,12 @@ class StreamingStats:
         self._mean = np.zeros(0, dtype=float)
         self._m2 = np.zeros(0, dtype=float)
         self._sample_buffer.clear()
-        self._bin_edges = None
-        self._hist_counts = None
+        if self._initial_bin_edges is not None:
+            self._bin_edges = self._initial_bin_edges.copy()
+            self._hist_counts = np.zeros(len(self._bin_edges) - 1, dtype=np.int64)
+        else:
+            self._bin_edges = None
+            self._hist_counts = None
         return self
 
 

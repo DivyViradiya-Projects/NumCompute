@@ -161,3 +161,74 @@ def test_csv_reader_errors(tmp_path):
     ragged.write_text("a,b\n1,2\n1,2,3\n")
     with pytest.raises(ValueError, match="Ragged CSV row"):
         CSVReader(ragged).read()
+
+
+def test_csv_reader_escaped_quotes_and_indices(tmp_path):
+    csv_file = tmp_path / "escaped.csv"
+    csv_file.write_text(
+        'f1,f2,text_label\n'
+        '1.0,2.0,"Item with ""special"" quote"\n'
+        '3.0,4.0,"Normal item"\n'
+    )
+    # Target by positive index
+    r_pos = CSVReader(csv_file, target_column=2)
+    X1, y1 = r_pos.read()
+    assert y1[0] == 'Item with "special" quote'
+
+    # Target by negative index
+    r_neg = CSVReader(csv_file, target_column=-1)
+    X2, y2 = r_neg.read()
+    np.testing.assert_array_equal(y1, y2)
+    np.testing.assert_allclose(X1, X2)
+
+
+def test_csv_reader_skip_header_with_comments(tmp_path):
+    csv_file = tmp_path / "skip.csv"
+    csv_file.write_text(
+        "PHYSICAL ROW 1 TO SKIP\n"
+        "# Comment row\n"
+        "col1,col2,label\n"
+        "1.0,2.0,0\n"
+        "3.0,4.0,1\n"
+    )
+    reader = CSVReader(csv_file, skip_header=1, target_column="label")
+    X, y = reader.read()
+    assert len(X) == 2
+    np.testing.assert_array_equal(y, [0, 1])
+
+
+def test_csv_reader_empty_and_comments_only_files(tmp_path):
+    empty = tmp_path / "empty.csv"
+    empty.write_text("")
+    with pytest.raises(ValueError, match="(No data rows found|empty or contains only comments)"):
+        CSVReader(empty).read()
+
+    comments_only = tmp_path / "comments_only.csv"
+    comments_only.write_text("# Line 1\n# Line 2\n")
+    with pytest.raises(ValueError, match="(No data rows found|empty or contains only comments)"):
+        CSVReader(comments_only).read()
+
+
+def test_csv_reader_chunk_sizes_boundary(tmp_path):
+    csv_file = tmp_path / "data_boundary.csv"
+    csv_file.write_text(
+        "a,b,y\n"
+        "1,2,0\n"
+        "3,4,1\n"
+        "5,6,0\n"
+    )
+    # Chunk size = 1
+    r = CSVReader(csv_file, target_column="y")
+    chunks_1 = list(r.iter_chunks(chunk_size=1))
+    assert len(chunks_1) == 3
+    assert len(chunks_1[0][0]) == 1
+
+    # Chunk size = exact file length (3)
+    chunks_exact = list(r.iter_chunks(chunk_size=3))
+    assert len(chunks_exact) == 1
+    assert len(chunks_exact[0][0]) == 3
+
+    # Chunk size > file length (10)
+    chunks_large = list(r.iter_chunks(chunk_size=10))
+    assert len(chunks_large) == 1
+    assert len(chunks_large[0][0]) == 3

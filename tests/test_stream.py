@@ -70,3 +70,76 @@ def test_stream_trainer_with_pipeline_and_log_immutability():
     # Mutating returned list must not affect trainer's internal logs
     logs[0]["chunk_index"] = 999
     assert trainer.get_logs()[0]["chunk_index"] == 0
+
+
+def test_stream_trainer_manual_score_chunk_no_double_counting():
+    tree = DecisionTreeClassifier(buffer_size=4)
+    trainer = StreamTrainer(tree)
+
+    # Initial chunk of 4 to fit model
+    trainer.fit_chunk([[0.0], [0.0], [10.0], [10.0]], [0, 0, 1, 1])
+    assert tree.is_fitted_
+
+    X_test = np.array([[0.0], [10.0]])
+    y_test = np.array([0, 1])
+
+    # Call score_chunk manually twice
+    acc1 = trainer.score_chunk(X_test, y_test)
+    acc2 = trainer.score_chunk(X_test, y_test)
+    assert acc1 == 1.0 and acc2 == 1.0
+
+    # Cumulative counters must still be 0 before fit_chunk
+    assert trainer._cumulative_evaluated == 0
+
+    # Now pass the same chunk to fit_chunk
+    log = trainer.fit_chunk(X_test, y_test)
+    assert log["chunk_accuracy"] == 1.0
+    assert log["cumulative_accuracy"] == 1.0
+    assert trainer._cumulative_evaluated == 2
+
+
+def test_stream_trainer_cumulative_accuracy_is_sample_weighted():
+    tree = DecisionTreeClassifier(buffer_size=4)
+    trainer = StreamTrainer(tree)
+
+    # Fit initial tree
+    trainer.fit_chunk([[0.0], [0.0], [10.0], [10.0]], [0, 0, 1, 1])
+
+    # Chunk 2: 2 samples, 100% correct (2/2)
+    trainer.fit_chunk([[0.0], [10.0]], [0, 1])
+
+    # Chunk 3: 8 samples, 50% correct (4/8)
+    log3 = trainer.fit_chunk(
+        [[0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]],
+        [0, 0, 0, 0, 1, 1, 1, 1],
+    )
+
+    # Total evaluated = 2 + 8 = 10 samples
+    # Total correct = 2 + 4 = 6
+    # Sample-weighted cumulative accuracy = 6 / 10 = 0.60
+    # (Unweighted mean of chunk accuracies would be (1.0 + 0.5) / 2 = 0.75)
+    assert log3["chunk_accuracy"] == 0.5
+    assert log3["cumulative_accuracy"] == 0.60
+
+
+def test_stream_trainer_empty_chunk_no_op():
+    tree = DecisionTreeClassifier(buffer_size=4)
+    trainer = StreamTrainer(tree)
+
+    res = trainer.fit_chunk([], [])
+    assert res == {}
+    assert trainer.chunk_index_ == 0
+    assert len(trainer.logs_) == 0
+
+
+def test_stream_trainer_invalid_inputs_rejected():
+    tree = DecisionTreeClassifier(buffer_size=4)
+    trainer = StreamTrainer(tree)
+
+    with pytest.raises(ValueError, match="2-D"):
+        trainer.fit_chunk([1.0, 2.0], [0, 1])
+
+    with pytest.raises(ValueError, match="match"):
+        trainer.fit_chunk([[1.0], [2.0]], [0])
+
+    assert len(trainer.logs_) == 0

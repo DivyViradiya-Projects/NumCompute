@@ -27,6 +27,13 @@ def test_safe_midpoint_large_values_no_overflow():
     assert an <= mid_neg <= bn
 
 
+def test_safe_midpoint_adjacent_floats():
+    a = 1.0
+    b = np.nextafter(1.0, 2.0)
+    mid = _safe_midpoint(a, b)
+    assert a <= mid <= b
+
+
 def test_compute_impurity_gini():
     # Pure node: Gini = 0.0
     assert _compute_impurity(np.array([10, 0]), 10, "gini") == 0.0
@@ -271,10 +278,28 @@ def test_tree_invalid_hyperparameters():
     with pytest.raises(TypeError, match="max_features"):
         DecisionTreeClassifier(max_features=[1, 2])
 
+    with pytest.raises(ValueError, match="random_state"):
+        DecisionTreeClassifier(random_state="not_an_int")
+
+    with pytest.raises(ValueError, match="random_state"):
+        DecisionTreeClassifier(random_state=True)
+
 
 # =====================================================================
 # Buffered Retraining Streaming Semantics & Atomicity Tests
 # =====================================================================
+def test_fit_after_partial_fit_clears_buffer():
+    tree = DecisionTreeClassifier(buffer_size=10)
+    tree.partial_fit([[1.0], [2.0]], [0, 1])
+    assert tree.n_buffered_samples_ == 2
+
+    # Calling batch fit resets pending buffer
+    tree.fit([[10.0], [20.0]], [0, 1])
+    assert tree.is_fitted_
+    assert tree.n_buffered_samples_ == 0
+    assert len(tree._X_buffer) == 0
+
+
 def test_buffered_retraining_below_threshold():
     tree = DecisionTreeClassifier(buffer_size=10)
     X_chunk = np.ones((8, 2))
@@ -392,6 +417,26 @@ def test_multiple_retraining_cycles():
     tree.partial_fit(np.ones((5, 1)), np.ones(5))
     assert tree.n_retrains_ == 2 and tree.n_buffered_samples_ == 0
     assert tree.n_samples_seen_ == 11
+
+
+def test_failed_initial_retraining_preserves_unfitted_state():
+    """Verify that if initial tree training fails, model remains unfitted and clean."""
+    tree = DecisionTreeClassifier(buffer_size=2)
+
+    def failing_build(*args, **kwargs):
+        raise RuntimeError("Failure on first fit")
+
+    tree._build_tree = failing_build
+
+    with pytest.raises(RuntimeError, match="Failure on first fit"):
+        tree.partial_fit([[1.0], [2.0]], [0, 1])
+
+    assert not tree.is_fitted_
+    assert tree.n_features_in_ is None
+    assert tree.classes_ is None
+    assert tree.tree_ is None
+    with pytest.raises(NotFittedError):
+        tree.predict([[1.0]])
 
 
 def test_tree_flush_method():

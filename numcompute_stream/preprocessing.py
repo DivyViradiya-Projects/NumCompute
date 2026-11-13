@@ -123,9 +123,8 @@ class StandardScaler:
         self.mean_ = np.where(self._n > 0, self._mean, 0.0)
         self.var_ = np.where(self._n > 0, self._m2 / np.maximum(self._n, 1.0), 0.0)
 
-        # Constant columns (var == 0.0 or below machine precision) receive scale_ = 1.0
-        eps = np.finfo(float).eps
-        self.scale_ = np.where(self.var_ <= eps, 1.0, np.sqrt(np.maximum(self.var_, 0.0)))
+        # Constant columns (exact zero variance) receive scale_ = 1.0; low-variance columns scale properly
+        self.scale_ = np.where(self.var_ <= 0.0, 1.0, np.sqrt(np.maximum(self.var_, 0.0)))
         return self
 
     def fit(self, X: Any, y=None) -> "StandardScaler":
@@ -218,7 +217,7 @@ class Imputer:
         self.n_features_in_: Optional[int] = None
         self.statistics_: Optional[np.ndarray] = None
         self._counts = np.zeros(0, dtype=float)
-        self._sums = np.zeros(0, dtype=float)
+        self._mean = np.zeros(0, dtype=float)
 
     def _validate_input(self, X: Any, allow_empty: bool = True) -> np.ndarray:
         arr = check_2d(X, name="X", allow_empty=allow_empty)
@@ -249,7 +248,7 @@ class Imputer:
         if self.n_features_in_ is None:
             self.n_features_in_ = arr.shape[1]
             self._counts = np.zeros(arr.shape[1], dtype=float)
-            self._sums = np.zeros(arr.shape[1], dtype=float)
+            self._mean = np.zeros(arr.shape[1], dtype=float)
         elif arr.shape[1] != self.n_features_in_:
             raise ValueError(
                 f"X has {arr.shape[1]} features, but Imputer was fitted "
@@ -258,11 +257,19 @@ class Imputer:
 
         if self.strategy == "mean":
             valid = ~np.isnan(arr)
-            self._counts += valid.sum(axis=0)
-            self._sums += np.where(valid, arr, 0.0).sum(axis=0)
+            chunk_n = valid.sum(axis=0).astype(float)
+            filled = np.where(valid, arr, 0.0)
+            chunk_mean = filled.sum(axis=0) / np.maximum(chunk_n, 1.0)
+
+            total_n = self._counts + chunk_n
+            delta = chunk_mean - self._mean
+            frac = chunk_n / np.maximum(total_n, 1.0)
+            self._mean = self._mean + delta * frac
+            self._counts = total_n
+
             stats = np.where(
                 self._counts > 0,
-                self._sums / np.maximum(self._counts, 1.0),
+                self._mean,
                 self.fill_value,
             )
             self.statistics_ = stats
@@ -287,7 +294,7 @@ class Imputer:
         self.n_features_in_ = None
         self.statistics_ = None
         self._counts = np.zeros(0, dtype=float)
-        self._sums = np.zeros(0, dtype=float)
+        self._mean = np.zeros(0, dtype=float)
         return self.partial_fit(X, y)
 
     def transform(self, X: Any) -> np.ndarray:
@@ -362,6 +369,8 @@ class OneHotEncoder:
             raise ValueError(f"X must be 1-D or 2-D, got shape {arr.shape}")
         if arr.dtype.kind == "O":
             raise TypeError("Object arrays not supported; use strings, numbers or booleans")
+        if arr.dtype.kind == "f" and np.isnan(arr).any():
+            raise ValueError("X contains NaN; impute it first or encode it as a category string")
         return arr
 
     def partial_fit(self, X: Any, y=None) -> "OneHotEncoder":

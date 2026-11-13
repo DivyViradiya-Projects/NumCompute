@@ -32,34 +32,34 @@ def plot_metric_over_time(
 
     Handles initial warm-up None values by plotting valid numeric segments
     while maintaining exact chunk index alignment.
-
-    Parameters
-    ----------
-    metric_values : sequence of float or None
-        Sequential metric values (e.g., accuracy or error). None entries represent
-        unfitted warm-up chunks.
-    title : str, optional
-        Chart title. Default "Metric Over Time".
-    ylabel : str, optional
-        Y-axis label. Default "Accuracy".
-    xlabel : str, optional
-        X-axis label. Default "Chunk Index".
-    retrain_points : sequence of int or None, optional
-        Chunk indices at which retraining occurred.
-    save_path : str or None, optional
-        File path to save the generated plot. Default None.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    ax : matplotlib.axes.Axes
     """
-    valid_vals = [v for v in metric_values if v is not None and np.isfinite(v)]
-    if len(valid_vals) == 0:
+    if len(metric_values) == 0:
+        raise ValueError("metric_values must not be empty")
+
+    y_list = []
+    has_finite = False
+    for idx, v in enumerate(metric_values):
+        if v is None:
+            y_list.append(np.nan)
+        elif isinstance(v, bool):
+            raise TypeError(f"metric_values cannot contain booleans, got {v!r} at index {idx}")
+        elif isinstance(v, (int, float, np.floating, np.integer)):
+            val_float = float(v)
+            if np.isfinite(val_float):
+                has_finite = True
+                y_list.append(val_float)
+            else:
+                y_list.append(np.nan)
+        else:
+            raise TypeError(
+                f"metric_values must contain numeric values or None, got {type(v).__name__} at index {idx}"
+            )
+
+    if not has_finite:
         raise ValueError("metric_values must contain at least one valid finite number")
 
     x = np.arange(len(metric_values))
-    y = np.array([np.nan if v is None else float(v) for v in metric_values], dtype=float)
+    y = np.array(y_list, dtype=float)
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
 
@@ -68,9 +68,11 @@ def plot_metric_over_time(
     if retrain_points:
         first = True
         for pt in retrain_points:
-            if isinstance(pt, (int, np.integer)) and 0 <= pt < len(metric_values):
+            if isinstance(pt, bool) or not isinstance(pt, (int, np.integer)):
+                raise TypeError(f"retrain_points must contain integers, got {pt!r}")
+            if 0 <= pt < len(metric_values):
                 ax.axvline(
-                    x=pt,
+                    x=int(pt),
                     color="#d62728",
                     linestyle="--",
                     alpha=0.65,
@@ -85,58 +87,62 @@ def plot_metric_over_time(
     ax.legend(loc="best")
 
     if save_path:
-        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        dir_name = os.path.dirname(os.path.abspath(save_path))
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return fig, ax
 
 
 def compare_models(
-    metric1: Sequence[float],
-    metric2: Sequence[float],
+    metric1: Sequence[Optional[float]],
+    metric2: Sequence[Optional[float]],
     labels: Tuple[str, str] = ("Config A", "Config B"),
     title: str = "Model Comparison",
     ylabel: str = "Accuracy",
     xlabel: str = "Chunk Index",
     save_path: Optional[str] = None,
 ) -> Tuple[plt.Figure, plt.Axes]:
-    """Compare performance trajectories between two streaming configurations.
-
-    Parameters
-    ----------
-    metric1 : sequence of float
-        Metric trajectory of configuration 1.
-    metric2 : sequence of float
-        Metric trajectory of configuration 2.
-    labels : (str, str), optional
-        Legend labels for the two configurations. Default ("Config A", "Config B").
-    title : str, optional
-        Chart title. Default "Model Comparison".
-    ylabel : str, optional
-        Y-axis label. Default "Accuracy".
-    xlabel : str, optional
-        X-axis label. Default "Chunk Index".
-    save_path : str or None, optional
-        File path to save figure. Default None.
-
-    Returns
-    -------
-    fig : matplotlib.figure.Figure
-    ax : matplotlib.axes.Axes
-    """
+    """Compare performance trajectories between two streaming configurations."""
     if len(metric1) == 0 or len(metric2) == 0:
         raise ValueError("metric sequences must not be empty")
 
-    if len(labels) != 2 or not isinstance(labels[0], str) or not isinstance(labels[1], str):
-        raise ValueError("labels must be a tuple of two strings")
+    if not (isinstance(labels, (tuple, list)) and len(labels) == 2):
+        raise ValueError("labels must be a tuple or list of two non-empty strings")
+    if not (isinstance(labels[0], str) and isinstance(labels[1], str)):
+        raise TypeError("labels must contain strings")
+    if len(labels[0].strip()) == 0 or len(labels[1].strip()) == 0:
+        raise ValueError("labels must be non-empty strings")
+
+    def _convert_seq(seq: Sequence[Optional[float]], name: str) -> np.ndarray:
+        res = []
+        has_num = False
+        for idx, v in enumerate(seq):
+            if v is None:
+                res.append(np.nan)
+            elif isinstance(v, bool):
+                raise TypeError(f"{name} cannot contain booleans, got {v!r} at index {idx}")
+            elif isinstance(v, (int, float, np.floating, np.integer)):
+                vf = float(v)
+                if np.isfinite(vf):
+                    has_num = True
+                    res.append(vf)
+                else:
+                    res.append(np.nan)
+            else:
+                raise TypeError(f"{name} must contain numeric values or None, got {type(v).__name__} at index {idx}")
+        if not has_num:
+            raise ValueError(f"{name} must contain at least one valid finite number")
+        return np.array(res, dtype=float)
+
+    y1 = _convert_seq(metric1, "metric1")
+    y2 = _convert_seq(metric2, "metric2")
 
     fig, ax = plt.subplots(figsize=(8, 4.5))
 
     x1 = np.arange(len(metric1))
     x2 = np.arange(len(metric2))
-
-    y1 = np.array([np.nan if v is None else float(v) for v in metric1], dtype=float)
-    y2 = np.array([np.nan if v is None else float(v) for v in metric2], dtype=float)
 
     ax.plot(x1, y1, marker="s", color="#1f77b4", linewidth=1.8, label=labels[0])
     ax.plot(x2, y2, marker="^", color="#ff7f0e", linewidth=1.8, label=labels[1])
@@ -148,7 +154,9 @@ def compare_models(
     ax.legend(loc="best")
 
     if save_path:
-        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        dir_name = os.path.dirname(os.path.abspath(save_path))
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         fig.savefig(save_path, bbox_inches="tight", dpi=150)
 
     return fig, ax

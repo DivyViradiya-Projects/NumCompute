@@ -163,6 +163,113 @@ def test_streaming_metrics_validation_errors():
         sm.update([0, 1], [0])
 
 
+def test_streaming_metrics_atomic_rejection_on_invalid_score():
+    sm = StreamingMetrics().update([0, 1], [0, 1], y_score_chunk=[0.2, 0.8])
+    initial_samples = sm.n_samples_seen_
+    initial_cm = sm.confusion_matrix_.copy()
+    initial_auc_true_len = len(sm._all_y_true_auc)
+
+    # 1. Invalid score length
+    with pytest.raises(ValueError, match="y_score must be a 1-D array matching y_true length"):
+        sm.update([0, 1], [0, 1], y_score_chunk=[0.5])
+    assert sm.n_samples_seen_ == initial_samples
+    np.testing.assert_array_equal(sm.confusion_matrix_, initial_cm)
+    assert len(sm._all_y_true_auc) == initial_auc_true_len
+
+    # 2. Invalid 2D score
+    with pytest.raises(ValueError, match="y_score must be a 1-D array"):
+        sm.update([0, 1], [0, 1], y_score_chunk=[[0.2], [0.8]])
+    assert sm.n_samples_seen_ == initial_samples
+    np.testing.assert_array_equal(sm.confusion_matrix_, initial_cm)
+
+    # 3. Non-numeric score
+    with pytest.raises(TypeError, match="y_score must be numeric"):
+        sm.update([0, 1], [0, 1], y_score_chunk=["low", "high"])
+    assert sm.n_samples_seen_ == initial_samples
+    np.testing.assert_array_equal(sm.confusion_matrix_, initial_cm)
+
+    # 4. Non-finite score (NaN or Inf)
+    with pytest.raises(ValueError, match="y_score must contain finite numeric values"):
+        sm.update([0, 1], [0, 1], y_score_chunk=[np.nan, 0.5])
+    assert sm.n_samples_seen_ == initial_samples
+    np.testing.assert_array_equal(sm.confusion_matrix_, initial_cm)
+
+
+def test_streaming_metrics_atomic_rejection_on_unknown_fixed_label():
+    sm = StreamingMetrics(labels=["A", "B"]).update(["A", "B"], ["A", "B"])
+    initial_samples = sm.n_samples_seen_
+    initial_cm = sm.confusion_matrix_.copy()
+
+    with pytest.raises(ValueError, match="unknown true label 'C'"):
+        sm.update(["A", "C"], ["A", "B"])
+
+    assert sm.n_samples_seen_ == initial_samples
+    np.testing.assert_array_equal(sm.confusion_matrix_, initial_cm)
+
+
+def test_streaming_metrics_dynamic_expansion_preserves_counts():
+    sm = StreamingMetrics()
+    sm.update([0, 1], [0, 1])
+    assert sm.labels == [0, 1]
+    np.testing.assert_array_equal(sm.confusion_matrix_, [[1, 0], [0, 1]])
+
+    # Discover new class 2
+    sm.update([1, 2], [1, 2])
+    assert sm.labels == [0, 1, 2]
+    expected_cm = np.array([
+        [1, 0, 0],
+        [0, 2, 0],
+        [0, 0, 1],
+    ])
+    np.testing.assert_array_equal(sm.confusion_matrix_, expected_cm)
+    assert sm.n_samples_seen_ == 4
+
+
+def test_streaming_metrics_auc_pos_label_orientation():
+    # Model assigns high score to 'dog'
+    y_true = np.array(["cat", "dog", "dog"])
+    y_pred = np.array(["cat", "dog", "dog"])
+    scores = np.array([0.1, 0.8, 0.9])
+
+    # pos_label='dog' -> high score = pos_label -> AUC = 1.0
+    sm_dog = StreamingMetrics(pos_label="dog").update(y_true, y_pred, y_score_chunk=scores)
+    assert sm_dog.compute_auc() == 1.0
+
+    # pos_label='cat' -> high score = not cat -> AUC = 0.0
+    sm_cat = StreamingMetrics(pos_label="cat").update(y_true, y_pred, y_score_chunk=scores)
+    assert sm_cat.compute_auc() == 0.0
+
+
+def test_streaming_metrics_auc_single_class_undefined():
+    # Only one true class observed -> AUC mathematically undefined -> None
+    sm = StreamingMetrics()
+    sm.update([0, 0, 0], [0, 0, 0], y_score_chunk=[0.1, 0.2, 0.3])
+    assert sm.compute_auc() is None
+
+
+def test_streaming_metrics_matches_batch_calculation():
+    from numcompute.metrics import accuracy, confusion_matrix, f1, precision, recall
+
+    yt1, yp1 = [0, 1, 2, 0], [0, 1, 1, 0]
+    yt2, yp2 = [1, 2, 0, 1], [1, 2, 2, 1]
+    yt3, yp3 = [2, 0, 1, 2], [2, 0, 0, 2]
+
+    sm = StreamingMetrics(average="macro")
+    sm.update(yt1, yp1)
+    sm.update(yt2, yp2)
+    sm.update(yt3, yp3)
+
+    y_true_all = np.array(yt1 + yt2 + yt3)
+    y_pred_all = np.array(yp1 + yp2 + yp3)
+
+    res = sm.result()
+    assert np.isclose(res["accuracy"], accuracy(y_true_all, y_pred_all))
+    assert np.isclose(res["precision"], precision(y_true_all, y_pred_all, average="macro"))
+    assert np.isclose(res["recall"], recall(y_true_all, y_pred_all, average="macro"))
+    assert np.isclose(res["f1"], f1(y_true_all, y_pred_all, average="macro"))
+    np.testing.assert_array_equal(res["confusion_matrix"], confusion_matrix(y_true_all, y_pred_all))
+
+
 # =====================================================================
 # RollingMetrics Tests
 # =====================================================================

@@ -77,18 +77,36 @@ def test_plot_predictions_vs_ground_truth_categorical(tmp_path):
     assert out_file.is_file()
 
 
-def test_visualise_validation_errors():
+def test_visualise_validation_errors(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
     with pytest.raises(ValueError, match="at least one valid"):
         plot_metric_over_time([None, None])
+
+    with pytest.raises(TypeError, match="cannot contain booleans"):
+        plot_metric_over_time([True, 0.5])
+
+    with pytest.raises(TypeError, match="must contain numeric values or None"):
+        plot_metric_over_time(["invalid_str", 0.5])
+
+    with pytest.raises(TypeError, match="retrain_points must contain integers"):
+        plot_metric_over_time([0.5, 0.8], retrain_points=["first"])
 
     with pytest.raises(ValueError, match="must not be empty"):
         compare_models([], [1.0])
 
-    with pytest.raises(ValueError, match="two strings"):
+    with pytest.raises(ValueError, match="two non-empty strings"):
         compare_models([1.0], [2.0], labels=("single",))
+
+    with pytest.raises(ValueError, match="non-empty"):
+        compare_models([1.0], [2.0], labels=("", "B"))
 
     with pytest.raises(ValueError, match="Lengths must match"):
         plot_predictions_vs_ground_truth([0, 1], [0])
 
     with pytest.raises(ValueError, match="1-D arrays"):
         plot_predictions_vs_ground_truth([[0]], [[0]])
+
+    # Saving to current-directory relative path
+    fig, _ = plot_metric_over_time([0.5, 0.8], save_path="local_plot.png")
+    assert (tmp_path / "local_plot.png").is_file()

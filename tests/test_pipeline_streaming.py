@@ -193,3 +193,72 @@ def test_pipeline_flush():
     assert pipe.n_retrains_ == 1
     assert pipe.predict([[0.5]])[0] == 0
     assert pipe.predict([[10.5]])[0] == 1
+
+
+def test_pipeline_input_validation_errors():
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("tree", DecisionTreeClassifier(buffer_size=10)),
+    ])
+
+    # 1. 1-D X chunk rejected
+    with pytest.raises(ValueError, match="2-D"):
+        pipe.partial_fit([1.0, 2.0], [0, 1])
+
+    # 2. Mismatched sample count rejected
+    with pytest.raises(ValueError, match="match"):
+        pipe.partial_fit([[1.0], [2.0]], [0])
+
+    # 3. 2-D y chunk rejected
+    with pytest.raises(ValueError, match="1-D"):
+        pipe.partial_fit([[1.0], [2.0]], [[0], [1]])
+
+    # 4. Feature count mismatch between chunks
+    pipe.partial_fit([[1.0, 2.0]], [0])
+    with pytest.raises(ValueError, match="features, but Pipeline was initialized with"):
+        pipe.partial_fit([[1.0, 2.0, 3.0]], [1])
+
+
+def test_pipeline_transformer_output_validation():
+    class BadTransformer:
+        def transform(self, X):
+            return np.ones((len(X) + 2, 2))  # changes sample count!
+
+    pipe = Pipeline([
+        ("bad", BadTransformer()),
+        ("tree", DecisionTreeClassifier(buffer_size=10)),
+    ])
+    with pytest.raises(ValueError, match="changed sample count"):
+        pipe.partial_fit([[1.0, 2.0]], [0])
+
+
+def test_pipeline_estimator_failure_preserves_committed_model_and_buffer():
+    pipe = Pipeline([
+        ("scaler", StandardScaler()),
+        ("tree", DecisionTreeClassifier(buffer_size=4)),
+    ])
+    # Fit initial working model on 4 samples
+    pipe.partial_fit([[0.0], [0.0], [10.0], [10.0]], [0, 0, 1, 1])
+    assert pipe.is_fitted_
+    assert pipe.predict([[0.0]])[0] == 0
+
+    # Ingest 2 samples (buffered)
+    pipe.partial_fit([[0.0], [0.0]], [0, 0])
+    assert pipe.n_buffered_samples_ == 2
+
+    # Mock the estimator's fit method to simulate a crash during retraining
+    def failing_fit(*args, **kwargs):
+        raise RuntimeError("Out of memory during tree retraining")
+
+    pipe.steps[-1][1].fit = failing_fit
+
+    # Push 2 more samples to trigger retraining -> fit raises!
+    with pytest.raises(RuntimeError, match="Out of memory"):
+        pipe.partial_fit([[10.0], [10.0]], [1, 1])
+
+    # Previous model MUST remain fitted and usable!
+    assert pipe.is_fitted_
+    assert pipe.predict([[0.0]])[0] == 0
+
+    # Pending buffer must NOT be wiped or corrupted after failed retrain!
+    assert pipe.n_buffered_samples_ == 4

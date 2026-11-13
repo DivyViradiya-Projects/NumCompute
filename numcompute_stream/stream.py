@@ -89,7 +89,7 @@ class StreamTrainer:
         self._cumulative_evaluated: int = 0
 
     def score_chunk(self, X_chunk: Any, y_chunk: Any) -> Optional[float]:
-        """Evaluate the current model on incoming chunk before training (prequential).
+        """Evaluate the current model on incoming chunk before training (pure evaluation).
 
         Parameters
         ----------
@@ -112,10 +112,17 @@ class StreamTrainer:
         if len(X_arr) == 0:
             return None
 
+        if X_arr.ndim != 2:
+            raise ValueError(f"X_chunk must be 2-D, got {X_arr.ndim}-D")
+        if y_arr.ndim != 1:
+            raise ValueError(f"y_chunk must be 1-D, got {y_arr.ndim}-D")
+        if len(X_arr) != len(y_arr):
+            raise ValueError(
+                f"X_chunk length ({len(X_arr)}) and y_chunk length ({len(y_arr)}) must match"
+            )
+
         y_pred = self.model.predict(X_arr)
         correct = int(np.sum(y_pred == y_arr))
-        self._cumulative_correct += correct
-        self._cumulative_evaluated += len(y_arr)
         return float(correct / len(y_arr))
 
     def fit_chunk(self, X_chunk: Any, y_chunk: Any) -> Dict[str, Any]:
@@ -137,12 +144,30 @@ class StreamTrainer:
         y_arr = np.asarray(y_chunk)
         n_samples = len(X_arr)
 
+        if n_samples == 0:
+            return {}
+
+        if X_arr.ndim != 2:
+            raise ValueError(f"X_chunk must be 2-D, got {X_arr.ndim}-D")
+        if y_arr.ndim != 1:
+            raise ValueError(f"y_chunk must be 1-D, got {y_arr.ndim}-D")
+        if len(X_arr) != len(y_arr):
+            raise ValueError(
+                f"X_chunk length ({len(X_arr)}) and y_chunk length ({len(y_arr)}) must match"
+            )
+
         retrains_before = getattr(self.model, "n_retrains_", 0)
 
         # 1. Prequential evaluation (test-then-train)
         score_start = time.perf_counter()
         chunk_acc = self.score_chunk(X_arr, y_arr)
         score_time = time.perf_counter() - score_start
+
+        if chunk_acc is not None:
+            n_eval = len(y_arr)
+            correct_eval = int(round(chunk_acc * n_eval))
+            self._cumulative_correct += correct_eval
+            self._cumulative_evaluated += n_eval
 
         # 2. Incremental model update
         fit_start = time.perf_counter()

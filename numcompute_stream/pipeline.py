@@ -80,6 +80,7 @@ class Pipeline:
 
         # State tracking
         self.is_fitted_: bool = False
+        self.n_features_in_: Optional[int] = None
         self.n_samples_seen_: int = 0
         self.n_retrains_: int = 0
 
@@ -146,7 +147,18 @@ class Pipeline:
         -------
         self : Pipeline
         """
-        curr_X = X
+        raw_X = np.asarray(X)
+        if raw_X.ndim != 2:
+            raise ValueError(f"X must be 2-D, got shape {raw_X.shape}")
+        raw_y = np.asarray(y)
+        if raw_y.ndim != 1:
+            raise ValueError(f"y must be 1-D, got shape {raw_y.shape}")
+        if len(raw_X) != len(raw_y):
+            raise ValueError(f"X length ({len(raw_X)}) and y length ({len(raw_y)}) must match")
+
+        self.n_features_in_ = raw_X.shape[1]
+
+        curr_X = raw_X
         for name, transformer in self.steps[:-1]:
             if hasattr(transformer, "fit_transform"):
                 curr_X = transformer.fit_transform(curr_X)
@@ -156,8 +168,14 @@ class Pipeline:
             else:
                 curr_X = transformer.transform(curr_X)
 
+            curr_X = np.asarray(curr_X)
+            if curr_X.ndim != 2:
+                raise ValueError(
+                    f"Transformer {name!r} returned output with {curr_X.ndim} dimensions, expected 2-D"
+                )
+
         final_est = self.steps[-1][1]
-        final_est.fit(curr_X, y)
+        final_est.fit(curr_X, raw_y)
 
         # Snapshot intermediate transformers
         self._committed_transformers = copy.deepcopy(self.steps[:-1])
@@ -189,25 +207,52 @@ class Pipeline:
         self : Pipeline
         """
         raw_X = np.asarray(X_chunk)
+        if raw_X.ndim != 2:
+            raise ValueError(f"X_chunk must be 2-D, got shape {raw_X.shape}")
         raw_y = np.asarray(y_chunk)
-
-        if raw_X.size == 0 or len(raw_X) == 0:
-            return self
+        if raw_y.ndim != 1:
+            raise ValueError(f"y_chunk must be 1-D, got shape {raw_y.shape}")
 
         if len(raw_X) != len(raw_y):
             raise ValueError(
                 f"X_chunk length ({len(raw_X)}) and y_chunk length ({len(raw_y)}) must match"
             )
 
-        # Update candidate intermediate transformers chunk-by-chunk
-        curr_X = raw_X
-        for name, transformer in self.steps[:-1]:
-            if hasattr(transformer, "partial_fit"):
-                transformer.partial_fit(curr_X)
-            elif hasattr(transformer, "fit") and not getattr(transformer, "is_fitted_", False):
-                transformer.fit(curr_X)
+        if len(raw_X) == 0:
+            return self
 
-            curr_X = transformer.transform(curr_X)
+        if self.n_features_in_ is None:
+            self.n_features_in_ = raw_X.shape[1]
+        elif raw_X.shape[1] != self.n_features_in_:
+            raise ValueError(
+                f"X_chunk has {raw_X.shape[1]} features, but Pipeline was initialized "
+                f"with {self.n_features_in_} features"
+            )
+
+        # Candidate transformers snapshot for failure atomicity
+        orig_candidate_transformers = copy.deepcopy(self.steps[:-1])
+        try:
+            curr_X = raw_X
+            for name, transformer in self.steps[:-1]:
+                if hasattr(transformer, "partial_fit"):
+                    transformer.partial_fit(curr_X)
+                elif hasattr(transformer, "fit") and not getattr(transformer, "is_fitted_", False):
+                    transformer.fit(curr_X)
+
+                trans_out = transformer.transform(curr_X)
+                trans_arr = np.asarray(trans_out)
+                if trans_arr.ndim != 2:
+                    raise ValueError(
+                        f"Transformer {name!r} returned output with {trans_arr.ndim} dimensions, expected 2-D"
+                    )
+                if trans_arr.shape[0] != len(raw_X):
+                    raise ValueError(
+                        f"Transformer {name!r} changed sample count from {len(raw_X)} to {trans_arr.shape[0]}"
+                    )
+                curr_X = trans_arr
+        except Exception:
+            self.steps[:-1] = orig_candidate_transformers
+            raise
 
         # Retain raw chunks in pending buffer
         self._raw_X_buffer.append(raw_X.copy())
@@ -234,8 +279,12 @@ class Pipeline:
         X_trans = self._transform_steps(self.steps[:-1], X_raw_all)
 
         final_est = self.steps[-1][1]
-        # Train estimator on the fully transformed raw window
-        final_est.fit(X_trans, y_raw_all)
+        orig_estimator = copy.deepcopy(final_est)
+        try:
+            final_est.fit(X_trans, y_raw_all)
+        except Exception:
+            self.steps[-1] = (self.steps[-1][0], orig_estimator)
+            raise
 
         # Succeeded: atomically commit transformer snapshot and clear raw buffer
         self._committed_transformers = copy.deepcopy(self.steps[:-1])

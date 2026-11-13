@@ -68,6 +68,13 @@ class StreamingMetrics:
             raise ValueError(
                 f"average must be 'binary', 'macro', or 'micro', got {average!r}"
             )
+        if isinstance(zero_division, bool) or not isinstance(
+            zero_division, (int, float, np.floating, np.integer)
+        ):
+            raise TypeError("zero_division must be a numeric value")
+        if not np.isfinite(zero_division):
+            raise ValueError("zero_division must be finite")
+
         self.average = average
         self.pos_label = pos_label
         self.zero_division = float(zero_division)
@@ -100,14 +107,14 @@ class StreamingMetrics:
         """Handle label discovery when labels are not fixed."""
         unique_seen = np.unique(np.concatenate([yt, yp]))
         if self.labels is None:
-            self.labels = sorted(unique_seen.tolist())
+            self.labels = sorted(unique_seen.tolist(), key=lambda v: str(v))
             n = len(self.labels)
             self.confusion_matrix_ = np.zeros((n, n), dtype=np.int64)
         else:
             new_labels = [l for l in unique_seen if l not in self.labels]
             if new_labels:
                 old_labels = list(self.labels)
-                self.labels = sorted(old_labels + new_labels)
+                self.labels = sorted(old_labels + new_labels, key=lambda v: str(v))
                 old_cm = self.confusion_matrix_
                 assert old_cm is not None
                 n_new = len(self.labels)
@@ -124,20 +131,10 @@ class StreamingMetrics:
         y_pred_chunk: Any,
         y_score_chunk: Optional[Any] = None,
     ) -> "StreamingMetrics":
-        """Accumulate predictions and ground truth labels from a chunk.
+        """Accumulate predictions and ground truth labels from a chunk atomically.
 
-        Parameters
-        ----------
-        y_true_chunk : array-like of shape (n_samples,)
-            True class labels.
-        y_pred_chunk : array-like of shape (n_samples,)
-            Predicted discrete class labels.
-        y_score_chunk : array-like of shape (n_samples,) or None, optional
-            Continuous prediction scores or probabilities for the positive class (used for AUC).
-
-        Returns
-        -------
-        self : StreamingMetrics
+        All inputs (including y_score_chunk) are fully validated before any internal
+        accumulator state or counters are modified.
         """
         yt = np.asarray(y_true_chunk)
         yp = np.asarray(y_pred_chunk)
@@ -150,10 +147,25 @@ class StreamingMetrics:
             raise ValueError(
                 f"y_true length ({len(yt)}) and y_pred length ({len(yp)}) must match"
             )
+
+        # Validate score chunk upfront if provided
+        ys_arr: Optional[np.ndarray] = None
+        if y_score_chunk is not None:
+            try:
+                ys_arr = np.asarray(y_score_chunk, dtype=float)
+            except (ValueError, TypeError) as exc:
+                raise TypeError("y_score must be numeric") from exc
+            if ys_arr.ndim != 1 or len(ys_arr) != len(yt):
+                raise ValueError(
+                    f"y_score must be a 1-D array matching y_true length ({len(yt)}), got shape {ys_arr.shape}"
+                )
+            if not np.all(np.isfinite(ys_arr)):
+                raise ValueError("y_score must contain finite numeric values")
+
         if len(yt) == 0:
             return self
 
-        # If labels are fixed, check for unknown labels and raise
+        # Validate fixed labels upfront before mutating anything
         if self._labels_fixed:
             assert self.labels is not None
             known_set = set(self.labels)
@@ -188,15 +200,9 @@ class StreamingMetrics:
         self.n_samples_seen_ += len(yt)
         self.n_chunks_seen_ += 1
 
-        # Continuous scores for AUC
-        if y_score_chunk is not None:
-            ys = np.asarray(y_score_chunk, dtype=float)
-            if ys.ndim != 1 or len(ys) != len(yt):
-                raise ValueError("y_score must be a 1-D array matching y_true length")
-            if not np.all(np.isfinite(ys)):
-                raise ValueError("y_score must contain finite numeric values")
+        if ys_arr is not None:
             self._all_y_true_auc.append(yt.copy())
-            self._all_y_score_auc.append(ys.copy())
+            self._all_y_score_auc.append(ys_arr.copy())
 
         return self
 
@@ -257,7 +263,11 @@ class StreamingMetrics:
         return self.zero_division, self.zero_division, self.zero_division
 
     def compute_auc(self) -> Optional[float]:
-        """Compute cumulative ROC AUC from continuous prediction scores."""
+        """Compute cumulative ROC AUC from continuous prediction scores.
+
+        Orientation is strictly governed by pos_label. If only one class has been
+        observed in true labels, AUC is mathematically undefined and None is returned.
+        """
         if not self._all_y_score_auc or not self._all_y_true_auc:
             return None
 
@@ -268,9 +278,18 @@ class StreamingMetrics:
         if len(unique_true) != 2:
             return None
 
-        # Binary ROC AUC score
+        # Binary mapping according to pos_label
+        if self.pos_label in unique_true:
+            y_binary = (y_true_all == self.pos_label).astype(int)
+        else:
+            sorted_classes = sorted(unique_true.tolist(), key=lambda v: str(v))
+            y_binary = (y_true_all == sorted_classes[1]).astype(int)
+
+        if np.all(y_binary == 0) or np.all(y_binary == 1):
+            return None
+
         try:
-            return float(roc_auc_score(y_true_all, y_score_all))
+            return float(roc_auc_score(y_binary, y_score_all))
         except Exception:
             return None
 
@@ -310,19 +329,18 @@ class StreamingMetrics:
 
 
 class RollingMetrics:
-    """Rolling-window metrics evaluator over the most recent W samples.
-
-    Parameters
-    ----------
-    window_size : int, optional
-        Maximum number of samples held in the sliding evaluation window. Default 500.
-    zero_division : float, optional
-        Value to return when denominator is zero. Default 0.0.
-    """
+    """Rolling-window metrics evaluator over the most recent W samples."""
 
     def __init__(self, window_size: int = 500, zero_division: float = 0.0) -> None:
         if isinstance(window_size, bool) or not isinstance(window_size, (int, np.integer)) or window_size < 1:
             raise ValueError(f"window_size must be an int >= 1, got {window_size!r}")
+        if isinstance(zero_division, bool) or not isinstance(
+            zero_division, (int, float, np.floating, np.integer)
+        ):
+            raise TypeError("zero_division must be a numeric value")
+        if not np.isfinite(zero_division):
+            raise ValueError("zero_division must be finite")
+
         self.window_size = int(window_size)
         self.zero_division = float(zero_division)
 
@@ -330,19 +348,7 @@ class RollingMetrics:
         self._y_pred_window: deque = deque(maxlen=self.window_size)
 
     def update(self, y_true_chunk: Any, y_pred_chunk: Any) -> "RollingMetrics":
-        """Push a chunk of observations into the rolling window.
-
-        Parameters
-        ----------
-        y_true_chunk : array-like
-            Ground truth labels.
-        y_pred_chunk : array-like
-            Predicted labels.
-
-        Returns
-        -------
-        self : RollingMetrics
-        """
+        """Push a chunk of observations into the rolling window."""
         yt = np.asarray(y_true_chunk)
         yp = np.asarray(y_pred_chunk)
 
