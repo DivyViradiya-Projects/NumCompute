@@ -439,6 +439,7 @@ class DecisionTreeClassifier:
 
         Resets any pending streaming buffer from prior ``partial_fit`` sessions.
 
+
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
